@@ -1,0 +1,75 @@
+## Interface: 120100
+## ExcludeLoadGameType: forever
+## Title: Lunchbox Toolkit
+## IconTexture: Interface\AddOns\LunchboxToolkit\Media\Inv_treasurechest_felfirecitadel_64
+## Notes: Level-aware stat weights, gear scoring, cap status, build slots, bag and vendor help for WoW: Forever.
+## AddonCompartmentFunc: LunchboxToolkit_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: LunchboxToolkit_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: LunchboxToolkit_OnAddonCompartmentLeave
+## Author: Lunchbox
+## Version: 1.0.0
+## SavedVariables: LunchboxToolkitDB
+## X-Category: Character Advancement
+
+Core.lua
+Palette.lua
+Chrome.lua
+Skins.lua
+Database.lua
+Levels.lua
+ClassData.lua
+TalentValues.lua
+TalentOverrides.lua
+Usability.lua
+ClassPacks.lua
+Classes\Warrior.lua
+Classes\Paladin.lua
+Classes\Hunter.lua
+Classes\Rogue.lua
+Classes\Priest.lua
+Classes\Shaman.lua
+Classes\Mage.lua
+Classes\Warlock.lua
+Classes\Druid.lua
+PrivateProfiles.lua
+Builds.lua
+Profiles.lua
+GearSets.lua
+Caps.lua
+CapAdjustments.lua
+Imbues.lua
+SpecAdvisor.lua
+DirectionArrow.lua
+TalentValuation.lua
+TalentRoutes.lua
+TalentFrameGlow.lua
+ImbueGlow.lua
+ShamanHUD.lua
+ItemStats.lua
+Score.lua
+Compare.lua
+GearCheck.lua
+GearPopup.lua
+BestSetup.lua
+CharMarks.lua
+Toasts.lua
+Played.lua
+PluginAPI.lua
+BuffMonitor.lua
+Trackers.lua
+TooltipPanel.lua
+Tooltip.lua
+QuestRewards.lua
+DropHint.lua
+UI.lua
+Wizard.lua
+Minimap.lua
+Legend.lua
+Slash.lua
+BagSort.lua
+BagOrder.lua
+Spellbook.lua
+Estimates.lua
+Leaderboard.lua
+TalentsProbe.lua
+SelfTest.lua

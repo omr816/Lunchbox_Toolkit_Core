@@ -1,0 +1,4 @@
+# Keep bytes exactly as authored: the release manifest hashes files, and a
+# CRLF conversion on checkout would change every hash.
+* -text
+

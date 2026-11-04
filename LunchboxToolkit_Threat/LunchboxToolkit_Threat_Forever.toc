@@ -1,0 +1,12 @@
+## Interface: 16001
+## AllowLoadGameType: forever
+## ExcludeLoadGameType: standard, classic
+## Title: Lunchbox Toolkit — Threat
+## IconTexture: Interface\AddOns\LunchboxToolkit\Media\Inv_treasurechest_felfirecitadel_64
+## Notes: Nameplate threat indicators for tanking, rebuilt from ThreatBeacon's mechanism (UnitThreatSituation + C_NamePlate.GetNamePlateForUnit), not the combat log.
+## Author: Lunchbox
+## Version: 1.0.0
+## Dependencies: LunchboxToolkit
+## SavedVariables: LunchboxToolkitThreatDB
+
+Threat.lua

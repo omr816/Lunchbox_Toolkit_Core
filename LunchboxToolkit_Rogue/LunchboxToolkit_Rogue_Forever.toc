@@ -1,0 +1,11 @@
+## Interface: 16001
+## AllowLoadGameType: forever
+## ExcludeLoadGameType: standard, classic
+## Title: Lunchbox Toolkit — Rogue
+## IconTexture: Interface\AddOns\LunchboxToolkit\Media\Inv_treasurechest_felfirecitadel_64
+## Notes: Adds main-hand and off-hand poison reminders for Rogues to the Lunchbox Toolkit buff monitor. Two separate switches (rogueMainHandPoison, rogueOffHandPoison), both off by default and per character; the off-hand reminder is unavailable with no off-hand weapon. A temporary enhancement cannot be told apart from a sharpening stone or oil, and poison damage is not scored.
+## Author: Lunchbox
+## Version: 1.0.0
+## Dependencies: LunchboxToolkit
+
+Rogue.lua

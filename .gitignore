@@ -1,0 +1,15 @@
+# This repository holds the shipped addon folders and the README.
+# Build output and local noise never belong in it.
+*.zip
+dist/
+_build_forever/
+_rollback_*/
+
+# Editor and scratch noise
+.vscode/
+*.bak
+*.luac
+luac.out
+*.tmp
+Thumbs.db
+desktop.ini

@@ -1,0 +1,11 @@
+## Interface: 16001
+## AllowLoadGameType: forever
+## ExcludeLoadGameType: standard, classic
+## Title: Lunchbox Toolkit — Racials
+## IconTexture: Interface\AddOns\LunchboxToolkit\Media\Inv_treasurechest_felfirecitadel_64
+## Notes: Registers the racial passives that can move a stat weight (Tauren Endurance, +5% maximum health) through the Lunchbox Toolkit PluginAPI. Actives and weapon-skill bonuses are not valued: no uptime or skill-to-hit conversion has been measured.
+## Author: Lunchbox
+## Version: 1.0.0
+## Dependencies: LunchboxToolkit
+
+Racials.lua
