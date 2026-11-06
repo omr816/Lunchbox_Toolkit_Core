@@ -161,6 +161,63 @@ local function readNodeReady(node)
     return true
 end
 
+-- A node has no name field: the client names it through its active entry's
+-- definition spell. Every step below was read off the client in the talents-ui
+-- probe on 2026-11-05, and the fallback to "Talent <id>" is the old behaviour.
+local function traitNodeName(cfg, node)
+    if type(node) ~= "table" or type(C_Traits) ~= "table" then return nil end
+
+    local active = safeField(node, "activeEntry")
+    local entryID
+    if type(active) == "table" then
+        entryID = safeNumber(safeField(active, "ID")) or safeNumber(safeField(active, "entryID"))
+    else
+        entryID = safeNumber(active)
+    end
+
+    if not entryID then
+        local ids = safeField(node, "entryIDs")
+        if type(ids) == "table" and ids[1] ~= nil then
+            local first = ids[1]
+            if type(first) == "table" then
+                entryID = safeNumber(safeField(first, "ID")) or safeNumber(safeField(first, "entryID"))
+            else
+                entryID = safeNumber(first)
+            end
+        end
+    end
+
+    if not entryID or type(C_Traits.GetEntryInfo) ~= "function" then return nil end
+
+    local okEntry, entry = pcall(C_Traits.GetEntryInfo, cfg, entryID)
+    if not okEntry or type(entry) ~= "table" then return nil end
+
+    local definitionID = safeNumber(safeField(entry, "definitionID"))
+    if not definitionID or type(C_Traits.GetDefinitionInfo) ~= "function" then return nil end
+
+    local okDef, def = pcall(C_Traits.GetDefinitionInfo, definitionID)
+    if not okDef or type(def) ~= "table" then return nil end
+
+    local name = safeString(safeField(def, "overrideName"))
+    if name then return name end
+
+    local spellID = safeNumber(safeField(def, "spellID"))
+    if not spellID then return nil end
+
+    if type(C_Spell) == "table" then
+        if type(C_Spell.GetSpellName) == "function" then
+            local ok, spelled = pcall(C_Spell.GetSpellName, spellID)
+            if ok and type(spelled) == "string" then return spelled end
+        end
+        if type(C_Spell.GetSpellInfo) == "function" then
+            local ok, info = pcall(C_Spell.GetSpellInfo, spellID)
+            if ok and type(info) == "table" and type(info.name) == "string" then return info.name end
+        end
+    end
+
+    return nil
+end
+
 local function collectTreeIDs(info)
     local ids, seen = {}, {}
 
@@ -252,7 +309,10 @@ local function readTraits()
                     if nid then
                         local nodeOk, node = pcall(C_Traits.GetNodeInfo, cfg, nid)
                         if nodeOk and type(node) == "table" then
-                            local cleanName = safeString(safeField(node, "name"))
+                            local cleanName = traitNodeName(cfg, node)
+                            if not cleanName then
+                                cleanName = safeString(safeField(node, "name"))
+                            end
                             if not cleanName then
                                 cleanName = "Talent " .. tostring(nid)
                             end
@@ -532,6 +592,16 @@ local function routeHeader(classToken, route)
     LT:Print(line)
 end
 
+-- The unit's level, not the cached one: the cache lags, and /lbs answered
+-- "starts at level 10" to a level-10 character (report 2026-11-05).
+local function currentLevel()
+    if type(UnitLevel) == "function" then
+        local ok, unit = pcall(UnitLevel, "player")
+        if ok and safeNumber(unit) then return safeNumber(unit) end
+    end
+    return (LT.player and safeNumber(LT.player.level)) or 1
+end
+
 local function runNext(buildIndex)
     local routes = LT.TalentRoutes
     if type(routes) ~= "table" or type(routes.Next) ~= "function" then
@@ -551,7 +621,7 @@ local function runNext(buildIndex)
         LT:Print("Note: " .. route.note)
     end
 
-    local level = (LT.player and safeNumber(LT.player.level)) or 1
+    local level = currentLevel()
     if level < 10 then
         LT:Print("No talent point before level 10; the route starts at level 10.")
         return
@@ -592,7 +662,7 @@ local function runRoute(buildIndex)
         LT:Print("Note: " .. route.note)
     end
 
-    local level = (LT.player and safeNumber(LT.player.level)) or 1
+    local level = currentLevel()
     if level < 10 then level = 10 end
 
     local trees = readTrees()
@@ -617,6 +687,11 @@ end
 -- "/lt lbs" hands the parsed words table ({"lbs", "next"}); the standalone
 -- "/lbs" hands the raw remainder ("next"). Both shapes are accepted.
 local function runCommand(input)
+    if type(LT.Diag) == "function" then
+        pcall(LT.Diag, LT, "/lbs entered, level=" .. tostring(currentLevel())
+            .. " input=" .. tostring(type(input) == "table" and "table" or input))
+    end
+
     local args = {}
     if type(input) == "table" then
         for index = 2, #input do args[#args + 1] = input[index] end
@@ -629,7 +704,7 @@ local function runCommand(input)
     -- Player decision 2026-11-05: the talent advisor is a level-10 feature, the
     -- same gate as the build wizard. Before the first talent point there is
     -- nothing to rank and no route step to take.
-    local level = (LT.player and safeNumber(LT.player.level)) or 1
+    local level = currentLevel()
     if level < 10 then
         LT:Print("The talent advisor starts at level 10, when the first talent point is available.")
         return
@@ -650,7 +725,15 @@ local function assertStandaloneSlash()
     _G.SLASH_LUNCHBOXSPECADVISOR1 = "/lbs"
     if type(SlashCmdList) == "table" then
         SlashCmdList["LUNCHBOXSPECADVISOR"] = function(input) runCommand(input) end
+        if type(LT.Diag) == "function" then
+            pcall(LT.Diag, LT, "/lbs slash registered (SlashCmdList present)")
+        end
+        return true
     end
+    if type(LT.Diag) == "function" then
+        pcall(LT.Diag, LT, "/lbs slash NOT registered: SlashCmdList is " .. type(SlashCmdList))
+    end
+    return false
 end
 
 local function registerCommand()
@@ -670,6 +753,13 @@ assertStandaloneSlash()
 
 -- Called by Core's module stage at PLAYER_LOGIN. Registration is idempotent:
 -- the registry refuses a second "lbs".
+-- Public entry, so /lt lbs can route here even when the standalone slash is not
+-- the one the client happens to read (report 2026-11-05: /lbs silent while the
+-- /lt tree worked).
+function SpecAdvisor:Command(input)
+    return runCommand(input)
+end
+
 function SpecAdvisor:OnPlayerLogin()
     assertStandaloneSlash()
     return registerCommand()

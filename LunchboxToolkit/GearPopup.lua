@@ -253,7 +253,13 @@ function GearPopup:DescribeRow(row, group)
     if type(row) ~= "table" then return "" end
 
     local text = ""
-    if row.source == "bank" then text = wrap("muted", "bank") .. " · " end
+    if row.package then
+        -- Two items in one answer. Saying "two items" and "wear both" is the
+        -- difference between a package and a single slot swap.
+        text = wrap("muted", "two items") .. " · "
+    elseif row.source == "bank" then
+        text = wrap("muted", "bank") .. " · "
+    end
 
     text = text .. wrap("muted", slotLabel(row)) .. ": "
 
@@ -262,12 +268,16 @@ function GearPopup:DescribeRow(row, group)
     local verdict = (group == "soon") and "caution" or "go"
 
     if delta then
-        text = text .. wrap(verdict, LT:FormatSigned(delta, 1))
+        if delta == 0 and row.emptySlot then
+            text = text .. wrap(verdict, "fills an empty slot")
+        else
+            text = text .. wrap(verdict, LT:FormatSigned(delta, 1))
+        end
     else
         text = text .. wrap("unknown", "no score")
     end
 
-    if delta and score then
+    if delta and score and not (delta == 0 and row.emptySlot) then
         text = text .. " " .. wrap("muted", "(now "
             .. LT:FormatNumber(score - delta, 1) .. " → " .. LT:FormatNumber(score, 1) .. ")")
     end
@@ -633,11 +643,20 @@ local function buildRow(index)
     row:SetScript("OnClick", function(self)
         if not self.link then return end
 
+        -- A package row is two items; equipping one of them alone would be the
+        -- wrong answer, so both links go to chat and the client does the swap.
+        if self.extraLink then
+            GearPopup:DropLink(self.link)
+            GearPopup:DropLink(self.extraLink)
+            LT:Print("Two items: the link pair is in chat; wear both in the client.")
+            return
+        end
+
         -- A soulbound item is safe to wear: taking it off loses nothing. Anything
         -- else keeps the old click, which puts the link in chat, and says why so
         -- the difference is visible rather than mysterious.
         if self.bound == true then
-            local ok, why = GearPopup:Equip(self.link, self.slot)
+            local ok, why = GearPopup:Equip(self.link, self.slot, self.bagID, self.bagSlot)
             if ok then
                 LT:Print("Equipped " .. tostring(self.nameLabel:GetText() or "the item") .. ".")
             else
@@ -649,7 +668,12 @@ local function buildRow(index)
 
         GearPopup:DropLink(self.link)
         if self.bound == false then
-            LT:Print("Not equipped from here: this item would bind to you. "
+            LT:Print("Not equipped from here: this item would bind to you ("
+                .. tostring(self.bindSource or "no source") .. "). "
+                .. "The link is in chat; wear it in the client.")
+        elseif self.bound == nil then
+            LT:Print("Not equipped from here: the client did not say whether this item "
+                .. "is bound (" .. tostring(self.bindSource or "no source") .. "). "
                 .. "The link is in chat; wear it in the client.")
         end
     end)
@@ -687,17 +711,27 @@ end
 -- player asked for it on two pages: Best setup and the Equipment upgrade list.
 -- Nothing is moved, sold or destroyed - the replaced item stays in the bags - and
 -- it refuses in combat, because the client refuses equipment changes mid-fight.
-function GearPopup:Equip(link, slot)
+function GearPopup:Equip(link, slot, bagID, bagSlot)
     if type(InCombatLockdown) == "function" then
         local okLocked, locked = pcall(InCombatLockdown)
         if okLocked and locked == true then return false, "not while you are in combat" end
     end
 
-    if type(EquipItemByName) ~= "function" then
-        return false, "this client does not expose EquipItemByName"
+    if type(link) ~= "string" or link == "" then return false, "no item to equip" end
+
+    -- This client has no EquipItemByName (report 2026-11-05). Using the item from
+    -- its own bag slot is the same action a right-click performs, and it is what
+    -- the client actually exposes.
+    local use = (type(C_Container) == "table" and C_Container.UseContainerItem) or UseContainerItem
+    if type(bagID) == "number" and type(bagSlot) == "number" and type(use) == "function" then
+        local okUse, err = pcall(use, bagID, bagSlot)
+        if okUse then return true end
+        if type(EquipItemByName) ~= "function" then return false, tostring(err) end
     end
 
-    if type(link) ~= "string" or link == "" then return false, "no item to equip" end
+    if type(EquipItemByName) ~= "function" then
+        return false, "this client exposes neither a bag use nor EquipItemByName"
+    end
 
     local ok, err = pcall(EquipItemByName, link, tonumber(slot) or nil)
     if not ok then return false, tostring(err) end
@@ -755,20 +789,91 @@ local function bindStateFrom(getInfo, link)
     return nil
 end
 
-local function bindState(link)
+-- The client can answer "is this bound" directly from the bag location, which is
+-- the only reliable answer on Forever: the 14th return of GetItemInfo is a
+-- modern-client field there, and a bound item was being read as unbound ("this
+-- item would bind to you" on an item the player had worn before - report
+-- 2026-11-05). Location first, then the tooltip's own words, then the old field.
+local function bindStateFromLocation(bag, slot)
+    if type(bag) ~= "number" or type(slot) ~= "number" then return nil end
+    if type(C_Item) ~= "table" or type(C_Item.IsBound) ~= "function" then return nil end
+    local ok, bound = pcall(C_Item.IsBound, { bagID = bag, slotIndex = slot })
+    if ok and type(bound) == "boolean" then return bound end
+    return nil
+end
+
+-- Pure: given a line reader, decide from the tooltip's own words. Kept separate
+-- from GameTooltip so /lt test can exercise it without a character or an item.
+-- Soulbound wins over a "Binds when …" line, because an item that has been worn
+-- shows both "Binds when equipped" and "Soulbound".
+function GearPopup.BindFromLines(reader)
+    if type(reader) ~= "function" then return nil end
+
+    local bound = nil
+    for index = 1, 40 do
+        local ok, text = pcall(reader, index)
+        if not ok or type(text) ~= "string" or text == "" then break end
+
+        if text:find("Soulbound", 1, true) then
+            bound = true
+        elseif bound == nil and (text:find("Binds when equipped", 1, true)
+            or text:find("Binds when used", 1, true)
+            or text:find("Binds when picked up", 1, true)) then
+            bound = false
+        end
+    end
+
+    return bound
+end
+
+local function bindStateFromTooltip(link)
+    if type(GameTooltip) ~= "table" or type(GameTooltip.SetHyperlink) ~= "function" then
+        return nil
+    end
+    local okLink = pcall(GameTooltip.SetHyperlink, GameTooltip, link)
+    if not okLink then return nil end
+
+    local found = GearPopup.BindFromLines(function(index)
+        local line = _G["GameTooltipTextLeft" .. tostring(index)]
+        return line and line.GetText and line:GetText() or nil
+    end)
+
+    if GameTooltip.Hide then pcall(GameTooltip.Hide, GameTooltip) end
+    return found
+end
+
+local function bindState(link, bag, slot, source)
     if type(link) ~= "string" or link == "" then return nil end
+
+    local located = bindStateFromLocation(bag, slot)
+    if located ~= nil then
+        if source then source[1] = "C_Item.IsBound" end
+        return located
+    end
+
+    local tooltip = bindStateFromTooltip(link)
+    if tooltip ~= nil then
+        if source then source[1] = "tooltip" end
+        return tooltip
+    end
 
     local modern = (type(C_Item) == "table" and type(C_Item.GetItemInfo) == "function")
         and C_Item.GetItemInfo or nil
     if modern then
         local state = bindStateFrom(modern, link)
-        if state ~= nil then return state end
+        if state ~= nil then
+            if source then source[1] = "C_Item.GetItemInfo" end
+            return state
+        end
     end
 
     if type(GetItemInfo) == "function" then
-        return bindStateFrom(GetItemInfo, link)
+        local state = bindStateFrom(GetItemInfo, link)
+        if state ~= nil and source then source[1] = "GetItemInfo" end
+        return state
     end
 
+    if source then source[1] = "none" end
     return nil
 end
 
@@ -934,8 +1039,13 @@ function GearPopup:Populate(entries)
             local plain = rgb("text")
 
             row.link = data.link
+            row.extraLink = data.extraLink
             row.slot = data.slot
-            row.bound = bindState(data.link)
+            row.bagID = data.bagID
+            row.bagSlot = data.bagSlot
+            local bindSource = {}
+            row.bound = bindState(data.link, data.bagID, data.bagSlot, bindSource)
+            row.bindSource = bindSource[1]
             row.nameLabel:SetTextColor(plain.r, plain.g, plain.b)
             row.nameLabel:SetText(tostring(data.name or data.link or "item"))
             row.detailLabel:SetText(self:DescribeRow(data, entry.group))

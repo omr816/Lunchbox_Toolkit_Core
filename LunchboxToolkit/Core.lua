@@ -22,7 +22,7 @@ local LT = LunchboxToolkit
 
 LT.name        = "LunchboxToolkit"    -- must match the TOC/folder name for ADDON_LOADED
 LT.displayName = "Lunchbox Toolkit"
-LT.version     = "1.0.0"
+LT.version     = "1.0.1"
 LT.apiVersion  = 1
 
 -- Confirmed by the player: Forever's level cap is 60.
@@ -103,22 +103,13 @@ function LT:Rect(frame)
     return { left = left, bottom = bottom, width = width, height = height }
 end
 
--- A diagnostic line. LT.DEBUG is the dev build's switch; debugChat is the
--- per-character option. The option is read defensively because Diag can run
--- before the Database module has initialised, and that must print nothing
--- rather than raise.
+-- A diagnostic line, printed only in a dev build. The per-character chat
+-- switch that used to reach these lines was removed on 2026-11-06: with it on,
+-- a normal session printed "[Bag] drop button: created at ..." on every bag
+-- open and "talent glow: ..." on login. Diagnostics belong to LT.DEBUG.
 function LT:Diag(message)
-    local on = self.DEBUG == true
-    if not on then
-        local db = self.Database
-        if type(db) == "table" and type(db.GetOptions) == "function" then
-            local ok, options = pcall(db.GetOptions, db)
-            on = ok and type(options) == "table" and options.debugChat == true
-        end
-    end
-    if on then
-        self:Print(message)
-    end
+    if self.DEBUG ~= true then return end
+    self:Print(message)
 end
 
 -- The class check every module asks for, so the token comparison lives once.

@@ -971,6 +971,23 @@ function Trackers:RecordWindfury(total, crit, ss)
     local store = windfuryStore(setup)
     local target = UnitName("target")
     if type(target) ~= "string" or LT:IsSecret(target) then target = "unknown" end
+
+    -- The weapon is recorded so the estimate can be named: the same Shaman may be
+    -- hitting with a different main hand when the next record lands.
+    local weapon
+    if type(GetInventoryItemLink) == "function" then
+        local okLink, link = pcall(GetInventoryItemLink, "player", 16)
+        if okLink and type(link) == "string" and link ~= "" then
+            local itemStats = LT.ItemStats
+            if type(itemStats) == "table" and type(itemStats.GetIdentity) == "function" then
+                local identity = itemStats:GetIdentity(link)
+                if type(identity) == "table" and type(identity.name) == "string" then
+                    weapon = identity.name
+                end
+            end
+        end
+    end
+
     local entry = {
         amount = total,
         level = numericSafe(UnitLevel("player")) or 0,
@@ -978,6 +995,7 @@ function Trackers:RecordWindfury(total, crit, ss)
         target = target,
         crit = crit == true,
         ss = ss == true,
+        weapon = weapon,
     }
     table.insert(store, entry)
     table.sort(store, function(a, b)
@@ -1293,7 +1311,7 @@ function Trackers:StopLog(announce)
     end
 end
 
--- Returns "armed", "deferred", "failed" or "off".
+-- Returns "armed", "deferred", "refused", "failed" or "off".
 function Trackers:SetLogProbe(on)
     on = on == true
     setOption("combatLogProbe", on)
@@ -1318,7 +1336,8 @@ function Trackers:SetLogProbe(on)
     return self:ArmLog()
 end
 
--- Registers the event without changing the option. Returns "armed" or "failed".
+-- Registers the event without changing the option. Returns "armed", "deferred",
+-- "refused" (the client will not report the event) or "failed".
 function Trackers:ArmLog()
     if self:CombatLocked() then
         self.pendingLog = true
@@ -1328,18 +1347,18 @@ function Trackers:ArmLog()
     if not frame and not buildFrame() then return "failed" end
     if not frame or type(frame.RegisterEvent) ~= "function" then return "failed" end
 
-    local ok = pcall(frame.RegisterEvent, frame, "COMBAT_LOG_EVENT_UNFILTERED")
-    if not ok then
-        self.logArmed = false
-        setOption("combatLogProbe", false)
-        LT:Warn("This client does not report COMBAT_LOG_EVENT_UNFILTERED; the probe is off.")
-        return "failed"
-    end
-
-    self.logArmed = true
-    self.pendingLog = false
-    self.logCount = 0
-    return "armed"
+    -- Forever answers RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED") with a
+    -- secure-action message - "blocked from an action only available to the
+    -- Blizzard UI" - which pcall does not catch, so the attempt itself shows the
+    -- player a red error (harness A4, 2026-11-05). The event is reported valid by
+    -- C_EventUtils and still refused, so validity cannot be the test. Windfury
+    -- runs on PLAYER_SWING and UNIT_COMBAT, which are valid here; the probe is
+    -- not worth a secure-action popup on the one client we target.
+    self.logArmed = false
+    setOption("combatLogProbe", false)
+    LT:Print("Combat-log probe is off: this client refuses COMBAT_LOG_EVENT_UNFILTERED. "
+        .. "Windfury uses the swing path instead.")
+    return "refused"
 end
 
 ------------------------------------------------------------------------------
@@ -1508,6 +1527,32 @@ local function printOneSet(store, setup)
     end
 end
 
+-- One line for the window: "2H avg 96 (3), DW avg 41 (2)". nil when there is
+-- nothing recorded, so the caller keeps its plain label.
+function Trackers:WindfurySummary()
+    if type(LT.IsClass) == "function" and not LT:IsClass("SHAMAN") then return nil end
+
+    local parts = {}
+    for _, setup in ipairs({ "2H", "DW" }) do
+        local store = self:WindfuryRecords(setup)
+        local total, count = 0, 0
+        for _, entry in ipairs(store or {}) do
+            local amount = tonumber(entry.amount)
+            if amount then
+                total = total + amount
+                count = count + 1
+            end
+        end
+        if count > 0 then
+            parts[#parts + 1] = setup .. " avg " .. tostring(math.floor(total / count + 0.5))
+                .. " (" .. tostring(count) .. ")"
+        end
+    end
+
+    if #parts == 0 then return nil end
+    return table.concat(parts, ", ")
+end
+
 function Trackers:PrintWindfuryRecords()
     -- Records are Shaman data; never printed for, or to, another class.
     if not LT:IsClass("SHAMAN") then
@@ -1520,6 +1565,30 @@ function Trackers:PrintWindfuryRecords()
         if #store > 0 then
             any = true
             printOneSet(store, setup)
+
+            -- Per-weapon averages, so the number stays named when the main hand
+            -- changed between records.
+            local groups, order = {}, {}
+            for _, entry in ipairs(store) do
+                local name = type(entry.weapon) == "string" and entry.weapon or "unknown weapon"
+                if not groups[name] then
+                    groups[name] = { total = 0, count = 0 }
+                    order[#order + 1] = name
+                end
+                local amount = tonumber(entry.amount)
+                if amount then
+                    groups[name].total = groups[name].total + amount
+                    groups[name].count = groups[name].count + 1
+                end
+            end
+
+            for _, name in ipairs(order) do
+                local group = groups[name]
+                if group.count > 0 then
+                    LT:Print(string.format("  %s: average %d (%d record(s))", name,
+                        math.floor(group.total / group.count + 0.5), group.count))
+                end
+            end
         end
     end
     if not any then
@@ -1624,7 +1693,7 @@ function Trackers:CommandProbe(words)
                     LT:Print("Combat-log probe on; this client cannot start it during combat."
                         .. " Run /lt probe log on again after the fight.")
                 end
-            else
+            elseif result == "failed" then
                 LT:Warn("The combat-log probe could not start on this client.")
             end
         elseif action == "off" then

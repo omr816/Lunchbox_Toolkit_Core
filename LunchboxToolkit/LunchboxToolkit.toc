@@ -1,5 +1,6 @@
-## Interface: 120100
-## ExcludeLoadGameType: forever
+## Interface: 16001
+## AllowLoadGameType: forever
+## ExcludeLoadGameType: standard, classic
 ## Title: Lunchbox Toolkit
 ## IconTexture: Interface\AddOns\LunchboxToolkit\Media\Inv_treasurechest_felfirecitadel_64
 ## Notes: Level-aware stat weights, gear scoring, cap status, build slots, bag and vendor help for WoW: Forever.
@@ -7,7 +8,7 @@
 ## AddonCompartmentFuncOnEnter: LunchboxToolkit_OnAddonCompartmentEnter
 ## AddonCompartmentFuncOnLeave: LunchboxToolkit_OnAddonCompartmentLeave
 ## Author: Lunchbox
-## Version: 1.0.0
+## Version: 1.0.1
 ## SavedVariables: LunchboxToolkitDB
 ## X-Category: Character Advancement
 
@@ -42,6 +43,9 @@ SpecAdvisor.lua
 DirectionArrow.lua
 TalentValuation.lua
 TalentRoutes.lua
+# The classic ring pass is inert on Forever (it needs PlayerTalentFrame), but the
+# same file now carries the PlayerSpellsFrame pass: nodeIDToButton + C_Traits
+# naming. Loaded here from 2026-11-05.
 TalentFrameGlow.lua
 ImbueGlow.lua
 ShamanHUD.lua
@@ -53,6 +57,8 @@ GearPopup.lua
 BestSetup.lua
 CharMarks.lua
 Toasts.lua
+WeaponTrainers.lua
+Fishing.lua
 Played.lua
 PluginAPI.lua
 BuffMonitor.lua

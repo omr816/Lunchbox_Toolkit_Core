@@ -269,6 +269,65 @@ function Usability:GetTraining(key, faction)
     }
 end
 
+-- Professions: Forever's own trainer lists, read 2026-11-05 from
+-- wow-professions.com/forever (mining-trainers and skinning-trainers), which is
+-- the only source that names this client's trainers. The "junior" trainers stand
+-- in the starting zones and teach Apprentice only, to skill 75; the city trainers
+-- teach every rank. Entries are ordered nearest-to-a-new-character first.
+Usability.PROFESSION_TRAINERS_SOURCE =
+    "wow-professions.com/forever, mining-trainers and skinning-trainers, read 2026-11-05"
+
+Usability.PROFESSION_TRAINERS = {
+    Horde = {
+        Skinning = {
+            { trainer = "Nawka Wildsong", zone = "Camp Narache, Mulgore", junior = true },
+            { trainer = "Yonn Deepcut",   zone = "Bloodhoof Village, Mulgore" },
+            { trainer = "Mooranta",       zone = "Thunder Bluff" },
+            { trainer = "Kagil",          zone = "The Den, Durotar", junior = true },
+            { trainer = "Thuwd",          zone = "The Drag, Orgrimmar" },
+            { trainer = "Killian Hagey",  zone = "Rogues' Quarter, Undercity" },
+        },
+        Mining = {
+            { trainer = "Vartha Rockmane", zone = "Camp Narache, Mulgore", junior = true },
+            { trainer = "Brek Stonehoof",  zone = "Thunder Bluff, Stonehoof Geology (lower rise)" },
+            { trainer = "Norzsh",          zone = "The Den, Durotar", junior = true },
+            { trainer = "Krunn",           zone = "Razor Hill, Durotar" },
+            { trainer = "Makaru",          zone = "Valley of Honor, Orgrimmar" },
+            { trainer = "Brom Killian",    zone = "War Quarter, Undercity" },
+        },
+    },
+    Alliance = {
+        Skinning = {
+            { trainer = "Riley Peltskinner",   zone = "Northshire Valley, Elwynn Forest", junior = true },
+            { trainer = "Helene Peltskinner",  zone = "Goldshire, Elwynn Forest" },
+            { trainer = "Maris Granger",       zone = "Old Town, Stormwind City" },
+            { trainer = "Brighid Stormflayer", zone = "Dun Morogh", junior = true },
+            { trainer = "Balthus Stoneflayer", zone = "Great Forge, Ironforge" },
+            { trainer = "Terunne Bearshaper",  zone = "Aldrassil, Teldrassil", junior = true },
+            { trainer = "Eladriel",            zone = "Craftsmen's Terrace, Darnassus" },
+        },
+        Mining = {
+            { trainer = "Kelsey Fargo",       zone = "Elwynn Forest", junior = true },
+            { trainer = "Gelman Stonehand",   zone = "Dwarven District, Stormwind City" },
+            { trainer = "Sally Swiftwrench",  zone = "Dun Morogh", junior = true },
+            { trainer = "Geofram Bouldertoe", zone = "Great Forge, Ironforge" },
+            { trainer = "Fanorran Stilloak",  zone = "Aldrassil, Teldrassil", junior = true },
+            { trainer = "Kurdram Stonehammer", zone = "Auberdine, Darkshore" },
+        },
+    },
+}
+
+-- The trainers this faction uses for a profession, nearest a new character first.
+-- nil when the profession is not in the table, so a caller never prints an empty
+-- heading.
+function Usability:GetProfessionTraining(profession, faction)
+    faction = faction or (LT.player and LT.player.faction)
+    local byFaction = faction and self.PROFESSION_TRAINERS[faction] or nil
+    local entries = byFaction and byFaction[profession] or nil
+    if type(entries) ~= "table" or #entries == 0 then return nil end
+    return entries
+end
+
 -- Where to train the skill, or nil when no weapon master could teach this type.
 -- The player's own word: name the city, not the generic line — a two-handed axe
 -- trainer lives in Orgrimmar for Horde, and "train in Orgrimmar" beats "see a
@@ -575,5 +634,27 @@ function Usability:GetVerdict(itemLink, options)
 
     call.proficiency = proficiency
 
-    return self:Classify(identity, classToken, level, call)
+    local verdict = self:Classify(identity, classToken, level, call)
+
+    -- A weapon subclass this build has no mapping for would otherwise be UNKNOWN
+    -- and silently refused. Forever reports the Skinning Knife as subclass 14
+    -- ("Misc"). The client can answer the narrower question "can this character
+    -- equip it", so ask it -- but ONLY for that unmapped case. Asking it for every
+    -- unknown verdict was wrong: it answered for items the module is supposed to
+    -- stay silent about (grey items, unlisted armour, an unanswerable proficiency
+    -- check), and the self tests proved it.
+    if type(verdict) == "table" and verdict.verdict == self.UNKNOWN
+        and type(identity) == "table"
+        and identity.classID == self.ITEM_CLASS_WEAPON
+        and self.WEAPON_SUBCLASS[identity.subClassID] == nil then
+        local canUse = type(C_PlayerInfo) == "table" and C_PlayerInfo.CanUseItem or nil
+        if type(canUse) == "function" then
+            local ok, usable = pcall(canUse, itemLink)
+            if ok and usable == true then
+                return { verdict = self.USABLE, client = true }
+            end
+        end
+    end
+
+    return verdict
 end

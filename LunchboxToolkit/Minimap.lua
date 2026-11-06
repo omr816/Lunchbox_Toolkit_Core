@@ -36,7 +36,8 @@ if type(LT.Modules) == "table" then
     LT.Modules.Minimap = Minimap
 end
 
-local BUTTON_SIZE = 20
+local BUTTON_SIZE = 31   -- same geometry as LibDBIcon on this client (Questie's button)
+local ICON_SIZE = 17
 local DEFAULT_ANGLE = 225   -- bottom-left, the quiet corner beside the ring
 local ANGLES = { 0, 45, 90, 135, 180, 225, 270, 315 }
 
@@ -169,7 +170,10 @@ function Minimap:PositionFor(angle, minimapWidth, minimapHeight, size, shape)
 
     local halfWidth = width / 2
     local halfHeight = height / 2
-    local inset = box / 2
+    -- The button CENTRE rides the rim, as every other minimap button does: half of
+    -- it sits outside the ring. Ours stayed fully inside until 2026-11-05.
+    local inset = 0
+    local RIM_OUTSET = 5
     local maxX = math.max(0, halfWidth - inset)
     local maxY = math.max(0, halfHeight - inset)
     local radians = math.rad(self:NormalizeAngle(angle))
@@ -190,7 +194,10 @@ function Minimap:PositionFor(angle, minimapWidth, minimapHeight, size, shape)
         scale = math.min(maxX, maxY)
     end
 
-    return dirX * scale, dirY * scale
+    -- Five pixels beyond the rim, the offset LibDBIcon uses on this client: the
+    -- button centre sits outside the ring and half the button hangs clear.
+    local out = scale + RIM_OUTSET
+    return dirX * out, dirY * out
 end
 
 local function applyPosition()
@@ -476,8 +483,18 @@ local function iconDot(parent, layer, colour, alpha)
     if type(chosen) == "table" and chosen.untinted then tint = UNTINTED end
     if type(tint) ~= "table" then tint = UNTINTED end
 
-    pcall(texture.SetSize, texture, BUTTON_SIZE, BUTTON_SIZE)
-    pcall(texture.SetPoint, texture, "CENTER", parent, "CENTER", 0, 0)
+    pcall(texture.SetSize, texture, ICON_SIZE, ICON_SIZE)
+    pcall(texture.SetPoint, texture, "TOPLEFT", parent, "TOPLEFT", 7, -6)
+
+    -- A game icon carries its own dark border; the minimap buttons crop it, and an
+    -- addon's own art is shown whole. Same rule QuestDon's button uses on this
+    -- client, which is the look the player compared against (2026-11-05).
+    if type(chosen) ~= "table" or not chosen.untinted then
+        if type(texture.SetTexCoord) == "function" then
+            pcall(texture.SetTexCoord, texture, 0.08, 0.92, 0.08, 0.92)
+        end
+    end
+
     pcall(texture.SetVertexColor, texture, tint.r, tint.g, tint.b, alpha or 1)
 
     return texture
@@ -514,6 +531,42 @@ function Minimap:Create()
     -- There is no mask and no glyph, and no flat colour texture, so the button
     -- cannot come back as an empty rectangle.
     local dot = iconDot(button, "ARTWORK", brand, 1)
+
+    -- The gold ring every stock minimap button wears, and the circular background
+    -- behind the icon. Both are the client's own textures (the same pair Questie's
+    -- button uses), not a mask: the earlier mask attempt left an empty rectangle,
+    -- and a ring is a plain texture that cannot do that. A client that refuses the
+    -- files simply draws no ring.
+    if dot then
+        local backdrop = button:CreateTexture(nil, "BACKGROUND")
+        if backdrop and type(backdrop.SetTexture) == "function" then
+            local okBack = pcall(backdrop.SetTexture, backdrop,
+                "Interface\\Minimap\\UI-Minimap-Background")
+            if okBack then
+                -- LibDBIcon's own numbers on this client: 20 px at 7,-5.
+                pcall(backdrop.SetSize, backdrop, 20, 20)
+                pcall(backdrop.SetPoint, backdrop, "TOPLEFT", button, "TOPLEFT", 7, -5)
+            else
+                pcall(backdrop.Hide, backdrop)
+            end
+        end
+
+        local ring = button:CreateTexture(nil, "OVERLAY")
+        if ring and type(ring.SetTexture) == "function" then
+            local okRing = pcall(ring.SetTexture, ring,
+                "Interface\\Minimap\\MiniMap-TrackingBorder")
+            if okRing then
+                -- 53 px pinned at the button's top-left, exactly as LibDBIcon does
+                -- it. The texture's gold circle is not centred in its own box, which
+                -- is why every centred or corner-offset size tried first drew the
+                -- icon off-centre (reports 2026-11-05).
+                pcall(ring.SetSize, ring, 53, 53)
+                pcall(ring.SetPoint, ring, "TOPLEFT", button, "TOPLEFT", 0, 0)
+            else
+                pcall(ring.Hide, ring)
+            end
+        end
+    end
 
     if not dot then
         -- No icon at all: hide and forget the button rather than leave an

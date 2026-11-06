@@ -200,7 +200,11 @@ local COMPARISON_FRAMES = {
 local function comparisonIsShown()
     for _, name in ipairs(COMPARISON_FRAMES) do
         local frame = _G[name]
-        if type(frame) == "table" and frame.IsShown and frame:IsShown() then
+        -- A WoW frame may be userdata, not a table: type()=="table" made every
+        -- comparison invisible here, so the panel never avoided one (report
+        -- 2026-11-05: our caption over the client compare on quest rewards).
+        if (type(frame) == "table" or type(frame) == "userdata")
+            and type(frame.IsShown) == "function" and frame:IsShown() then
             return true
         end
     end
@@ -230,7 +234,8 @@ local function comparisonRects()
 
     for _, name in ipairs(COMPARISON_FRAMES) do
         local frame = _G[name]
-        if type(frame) == "table" and frame.IsShown and frame:IsShown() then
+        if (type(frame) == "table" or type(frame) == "userdata")
+            and type(frame.IsShown) == "function" and frame:IsShown() then
             local rect = rectOf(frame)
             if rect then table.insert(rects, rect) end
         end
@@ -406,7 +411,9 @@ local function anchorTo(panel, owner)
         height = height or LINE_HEIGHT
     end
 
-    if owner == GameTooltip and comparisonIsShown() then
+    -- Any owner, not only GameTooltip: a quest reward pane may hang the item on a
+    -- shopping tooltip while the comparison sits beside it.
+    if comparisonIsShown() then
         local blockers = { ownerRect }
         for _, rect in ipairs(comparisonRects()) do
             table.insert(blockers, rect)

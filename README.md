@@ -1,4 +1,4 @@
-# Lunchbox Toolkit — Forever (RC 1.0.0)
+# Lunchbox Toolkit — Forever
 
 An all-in-one levelling companion for **World of Warcraft: Forever** (`## Interface: 16001`).
 
@@ -6,10 +6,9 @@ Your gear and your quest rewards, judged against **weights you can see and chang
 black box, and not a tier list. Everything the addon decides can be read in one line and
 overruled in one click.
 
-> **RC 1.0.0.** The code is complete and gated; the first real sessions are happening at
-> launch. Anything that disagrees with the client is fixed in place, and every fix is
-> recorded in `BUILD_LOG.md`. Nothing in this README is claimed as "tested in game" unless it
-> says so.
+> **Release candidate.** The code is complete and gated offline; the first real sessions are
+> happening at launch. Anything that disagrees with the client is fixed in place and noted in
+> the release notes. Nothing in this README is claimed as "tested in game" unless it says so.
 
 ---
 
@@ -17,7 +16,7 @@ overruled in one click.
 
 1. Close the game.
 2. Extract the release zip into `Interface\AddOns` so that
-   `Interface\AddOns\LunchboxToolkit\LunchboxToolkit_Forever.toc` exists. The zip root holds
+   `Interface\AddOns\LunchboxToolkit\LunchboxToolkit.toc` exists. The zip root holds
    the six addon folders; extract the **folders**, not a wrapper folder.
 3. Start the game and enable all six folders.
 
@@ -64,7 +63,7 @@ everything.
 * **/lbs route** — the whole path from your level.
 
 The scorer and the route are shown side by side. When they disagree, both are printed and the
-route is named as the route; nothing is silently overruled. At RC 1.0.0 the Enhancement Shaman
+route is named as the route; nothing is silently overruled. At 1.0.0 the Enhancement Shaman
 1–60 route is authored (plus the "Water Shield First" variant).
 
 ### Caps — targets you can see
@@ -155,7 +154,7 @@ you change there affects the shipped data or a template.
 * **BankStack** — sorts bags and bank. This addon's `/lt sort` calls the client's own sort, so
   use one; there is no clash unless both are run at the same moment.
 
-## Known unknowns (RC 1.0.0)
+## Known unknowns
 
 The game was offline while this build was written. These are verified by code and offline
 harnesses only, and are the first things to watch in play: talent ranking on a live client,
@@ -166,4 +165,10 @@ whether the first-use tour opens where it should.
 
 ## Licence
 
-Personal project. Do not redistribute without permission.
+MIT — see `LICENSE`. Fork it, change it, argue with the weights; the licence asks only that
+the copyright notice travels with the copies you pass on.
+
+The addon icon beside it (`Media\Inv_treasurechest_felfirecitadel_64`) is Blizzard
+Entertainment's artwork, shipped unmodified for identification. It is not covered by the MIT
+licence. World of Warcraft and Blizzard Entertainment are trademarks or registered trademarks
+of Blizzard Entertainment, Inc. This add-on is not affiliated with or endorsed by Blizzard.

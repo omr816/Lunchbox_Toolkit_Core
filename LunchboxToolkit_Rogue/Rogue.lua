@@ -62,7 +62,7 @@ LT.Rogue = Rogue
 
 Rogue.PLUGIN_ID  = "lunchbox_rogue"
 Rogue.CLASS      = "ROGUE"
-Rogue.VERSION = "1.0.0"
+Rogue.VERSION = "1.0.1"
 
 Rogue.OPTION_KEYS = {
     mainHandPoison = "rogueMainHandPoison",
@@ -95,7 +95,7 @@ local function debug(message)
     end
 end
 
--- Diagnostic line, printed only while the dev switch or debugChat is on.
+-- Diagnostic line, printed only in a dev build (LT.DEBUG).
 local function diag(message)
     if type(LT.Diag) == "function" then
         pcall(LT.Diag, LT, message)

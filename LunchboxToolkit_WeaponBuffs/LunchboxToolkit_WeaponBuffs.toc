@@ -1,10 +1,11 @@
-## Interface: 120100
-## ExcludeLoadGameType: forever
+## Interface: 16001
+## AllowLoadGameType: forever
+## ExcludeLoadGameType: standard, classic
 ## Title: Lunchbox Toolkit — Weapon Buffs
 ## IconTexture: Interface\AddOns\LunchboxToolkit\Media\Inv_treasurechest_felfirecitadel_64
 ## Notes: Adds an off-hand Shaman imbue reminder, plus a temporary weapon enhancement reminder for classes whose weapon slot allows one (never Shaman or Rogue). Switches live in the core's per-character options and start off.
 ## Author: Lunchbox
-## Version: 1.0.0
+## Version: 1.0.1
 ## Dependencies: LunchboxToolkit
 
 WeaponBuffs.lua

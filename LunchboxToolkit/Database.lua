@@ -92,11 +92,16 @@ local function defaultOptions()
         -- Bag, vendor, cap and levelling switches (2026-11 wave). Additive only:
         -- the Migrate loop below fills a missing key on every load.
         gearCheckOnBagOpen  = false,   -- scan the bags when they open (opt-in)
+        bagScanDiagnostics  = false,   -- the per-item "[Bag] no mark" lines (opt-in)
+        shamanHudScale      = 1,       -- totem HUD scale, 0.6 to 2
+        shamanHudAlpha      = 0.9,     -- totem HUD background opacity, 0.1 to 1
+        shamanHudUnlocked   = false,   -- the cog: drag and sliders on the HUD
+        weaponTrainerHint   = true,    -- toast on entering a city with a weapon master
         questTurnInScan     = false,   -- bag scan on quest turn-in (opt-in)
         durabilityWarn      = true,    -- one line at a merchant when an equipped item is worn out
         autoRepair          = false,   -- repair all at a merchant, player money only
         junkSale            = false,   -- allow the score-based junk sale (see Vendor)
-        debugChat           = false,   -- diagnostic lines in chat (dev)
+        questTurnInScan     = false,   -- gear check when a quest is handed in
         capBoostUnknown     = false,   -- true = keep boosting caps whose current value is unknown
         levellingBands      = true,    -- level-band weight multipliers while below 60
         showPaceLine        = true,    -- levelling pace line on the Ranks page

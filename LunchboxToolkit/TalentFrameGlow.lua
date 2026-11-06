@@ -288,6 +288,209 @@ local function clearRing(button)
 end
 
 ------------------------------------------------------------------------------
+-- Forever — PlayerSpellsFrame.TalentsFrame.nodeIDToButton
+--
+-- The modern talent UI keeps no named talent buttons: the map field
+-- `TalentsFrame.nodeIDToButton` is the only handle, and a node is named through
+-- C_Traits (node.activeEntry.entryID -> entry.definitionID -> definition.spellID
+-- -> C_Spell.GetSpellName). Every step below was read off the client in the
+-- talents-ui probe on 2026-11-05; nothing here is assumed.
+------------------------------------------------------------------------------
+
+local function modernTalents()
+    local frame = _G.PlayerSpellsFrame
+    if not isRegion(frame) or type(frame.IsShown) ~= "function" then return nil end
+    local talents = frame.TalentsFrame
+    if not isRegion(talents) or type(talents.nodeIDToButton) ~= "table" then return nil end
+    return frame, talents
+end
+
+local function nodeIdentity(configID, nodeID)
+    if not configID or type(C_Traits) ~= "table" then return nil end
+    if type(C_Traits.GetNodeInfo) ~= "function" then return nil end
+
+    local okNode, node = pcall(C_Traits.GetNodeInfo, configID, nodeID)
+    if not okNode or type(node) ~= "table" then return nil end
+
+    local active = node.activeEntry
+    local entryID = type(active) == "table" and (active.ID or active.entryID) or active
+    if type(entryID) ~= "number" then return nil end
+
+    local okEntry, entry = pcall(C_Traits.GetEntryInfo, configID, entryID)
+    if not okEntry or type(entry) ~= "table" or not entry.definitionID then return nil end
+
+    local okDef, def = pcall(C_Traits.GetDefinitionInfo, entry.definitionID)
+    if not okDef or type(def) ~= "table" then return nil end
+
+    local name = def.overrideName
+    if type(name) ~= "string" and def.spellID and type(C_Spell) == "table" then
+        if type(C_Spell.GetSpellName) == "function" then
+            local ok, spelled = pcall(C_Spell.GetSpellName, def.spellID)
+            if ok and type(spelled) == "string" then name = spelled end
+        end
+        if type(name) ~= "string" and type(C_Spell.GetSpellInfo) == "function" then
+            local ok, info = pcall(C_Spell.GetSpellInfo, def.spellID)
+            if ok and type(info) == "table" and type(info.name) == "string" then name = info.name end
+        end
+    end
+
+    return name, node
+end
+
+local function routeRows()
+    local routes = LT.TalentRoutes
+    if type(routes) ~= "table" or type(routes.Get) ~= "function" then return nil end
+
+    local classToken = LT.player and LT.player.class
+    local spec
+    local builds = LT.Builds
+    if type(builds) == "table" and type(builds.GetActive) == "function" then
+        local ok, build = pcall(builds.GetActive, builds)
+        if ok and type(build) == "table" then spec = build.spec end
+    end
+
+    local ok, rows = pcall(routes.Get, routes, classToken, spec)
+    if ok and type(rows) == "table" then return rows end
+    return nil
+end
+
+local modernRings = {}
+local hookModern   -- defined below; RefreshModern calls it to attach hooks
+
+function TalentFrameGlow:RefreshModern(verbose)
+    hookModern()
+
+    -- verbose is the /lt glowdebug path: it prints whether or not chat
+    -- diagnostics are on, because this is the one question left for the rings.
+    local function note(message)
+        if verbose and type(LT.Print) == "function" then
+            pcall(LT.Print, LT, message)
+            return
+        end
+        if type(LT.Diag) == "function" then pcall(LT.Diag, LT, message) end
+    end
+
+    local frame, talents = modernTalents()
+    if not frame then
+        note("talent glow: no PlayerSpellsFrame.TalentsFrame.nodeIDToButton")
+        return
+    end
+
+    for button in pairs(modernRings) do clearRing(button) end
+    modernRings = {}
+
+    if type(frame.IsShown) == "function" and not frame:IsShown() then return end
+    if type(talents.IsShown) == "function" and not talents:IsShown() then return end
+
+    local configID
+    if type(C_ClassTalents) == "table" and type(C_ClassTalents.GetActiveConfigID) == "function" then
+        local ok, id = pcall(C_ClassTalents.GetActiveConfigID)
+        if ok then configID = id end
+    end
+    if not configID then
+        note("talent glow: no config id")
+        return
+    end
+
+    -- The route is the preferred plan. Where a class/spec has no authored route,
+    -- fall back to the ranked candidates from TalentValuation, so every class with
+    -- talent data gets rings (player decision 2026-11-05).
+    local ordered = {}
+
+    local rows = routeRows()
+    if rows then
+        local seen = {}
+        for _, row in ipairs(rows) do
+            local key = normalizeName(type(row.name) == "string" and row.name or "")
+            if key ~= "" and not seen[key] then
+                seen[key] = true
+                ordered[#ordered + 1] = key
+            end
+        end
+    end
+
+    if #ordered == 0 then
+        local advisor = LT.SpecAdvisor
+        local valuation = LT.TalentValuation
+        if type(advisor) == "table" and type(advisor.Read) == "function"
+            and type(valuation) == "table" and type(valuation.Rank) == "function" then
+            local okRead, trees = pcall(advisor.Read, advisor)
+            if okRead and type(trees) == "table" then
+                local index = 1
+                local builds = LT.Builds
+                if type(builds) == "table" and type(builds.GetActiveIndex) == "function" then
+                    local okIndex, active = pcall(builds.GetActiveIndex, builds)
+                    if okIndex and tonumber(active) then index = tonumber(active) end
+                end
+
+                local okRank, ranked = pcall(valuation.Rank, valuation, trees, nil, index)
+                if okRank and type(ranked) == "table" then
+                    for _, entry in ipairs(ranked) do
+                        local key = normalizeName(type(entry.name) == "string" and entry.name or "")
+                        if key ~= "" then ordered[#ordered + 1] = key end
+                    end
+                end
+            end
+        end
+    end
+
+    local byName = {}
+    for nodeID, button in pairs(talents.nodeIDToButton) do
+        local name, node = nodeIdentity(configID, nodeID)
+        if type(name) == "string" then
+            byName[normalizeName(name)] = { button = button, node = node }
+        end
+    end
+
+    local resolved = 0
+    for _ in pairs(byName) do resolved = resolved + 1 end
+    note("talent glow: nodes=" .. tostring(resolved) .. " order=" .. tostring(#ordered))
+
+    if verbose then
+        local names = {}
+        for name in pairs(byName) do
+            names[#names + 1] = name
+            if #names >= 6 then break end
+        end
+        note("  resolved: " .. table.concat(names, ", "))
+
+        local orderNames = {}
+        for index = 1, math.min(#ordered, 6) do
+            orderNames[index] = ordered[index]
+        end
+        note("  order: " .. table.concat(orderNames, ", "))
+    end
+
+    -- The same four rank colours the classic frame uses, on the first four ordered
+    -- talents that are not maxed. Ordered is already one entry per talent (route
+    -- rows repeat per rank; ranked entries are one per talent).
+    local painted = 0
+    local seenName = {}
+    for _, key in ipairs(ordered) do
+        if key and seenName[key] then
+            key = nil
+        elseif key then
+            seenName[key] = true
+        end
+
+        local entry = key and byName[key] or nil
+        if entry then
+            local node = entry.node or {}
+            local purchased = tonumber(node.ranksPurchased) or 0
+            local maxRanks = tonumber(node.maxRanks) or 0
+            if maxRanks > 0 and purchased < maxRanks then
+                painted = painted + 1
+                applyRing(entry.button, RANK_COLOURS[painted] or RANK_COLOURS[4])
+                modernRings[entry.button] = true
+                if painted >= 4 then break end
+            end
+        end
+    end
+
+    note("talent glow: painted " .. tostring(painted))
+end
+
+------------------------------------------------------------------------------
 -- Ranking
 ------------------------------------------------------------------------------
 
@@ -498,6 +701,64 @@ end
 -- Driver
 ------------------------------------------------------------------------------
 
+local modernHooked, modernPending
+
+-- Hook the modern window once its map exists, then refresh on the same events
+-- the classic path uses. The window is lazy: it may not exist until the player
+-- opens it, so every event retries the hook.
+-- Hooks the window as soon as it EXISTS, not once the node map exists: the map
+-- (and TalentsFrame) are created on first open, so requiring them here meant the
+-- hook was never attached at all (report 2026-11-05: /lbs printed, no rings).
+hookModern = function()
+    local frame = _G.PlayerSpellsFrame
+    if not isRegion(frame) or type(frame.HookScript) ~= "function" then
+        if type(LT.Diag) == "function" then
+            pcall(LT.Diag, LT, "talent glow: PlayerSpellsFrame is " .. type(_G.PlayerSpellsFrame))
+        end
+        return false
+    end
+
+    if not modernHooked then
+        pcall(frame.HookScript, frame, "OnShow", function()
+            TalentFrameGlow:RefreshModern()
+        end)
+        pcall(frame.HookScript, frame, "OnHide", function()
+            TalentFrameGlow:RefreshModern()
+        end)
+        modernHooked = true
+    end
+
+    -- TalentsFrame appears later; hook it the first time it is visible, and hook
+    -- it only once.
+    local talents = frame.TalentsFrame
+    if type(talents) == "table" and type(talents.HookScript) == "function"
+        and not talents.__ltGlowHooked then
+        talents.__ltGlowHooked = true
+        pcall(talents.HookScript, talents, "OnShow", function()
+            TalentFrameGlow:RefreshModern()
+        end)
+    end
+
+    return true
+end
+
+local function scheduleModern()
+    if modernPending then return end
+    modernPending = true
+
+    local function run()
+        modernPending = false
+        hookModern()
+        TalentFrameGlow:RefreshModern()
+    end
+
+    if type(C_Timer) == "table" and type(C_Timer.After) == "function" then
+        pcall(C_Timer.After, 0.2, run)
+    else
+        run()
+    end
+end
+
 local eventFrame = CreateFrame("Frame")
 eventFrame:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" then
@@ -505,7 +766,19 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
             or arg1 == "Blizzard_PlayerSpells"
             or arg1 == "Blizzard_ClassTalentUI" then
             buildHooks()
+            hookModern()
         end
+        return
+    end
+
+    if event == "PLAYER_LOGIN" then
+        hookModern()
+        return
+    end
+
+    if event == "PLAYER_ENTERING_WORLD" then
+        hookModern()
+        scheduleModern()
         return
     end
 
@@ -514,11 +787,14 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
         if frame and type(frame.IsShown) == "function" and frame:IsShown() then
             scheduleRefresh()
         end
+        scheduleModern()
     end
 end)
 
 for _, event in ipairs({
     "ADDON_LOADED",
+    "PLAYER_LOGIN",
+    "PLAYER_ENTERING_WORLD",
     "PLAYER_TALENT_UPDATE",
     "CHARACTER_POINTS_CHANGED",
 }) do

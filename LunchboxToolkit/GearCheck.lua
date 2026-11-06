@@ -339,12 +339,29 @@ local function nameFor(identity, comparison, link)
     return nil
 end
 
+-- Does this item fill a slot that is empty right now? The tooltip already says
+-- "grey — better than empty" on that rule (Tooltip:GreyBeatsEmpty calls this same
+-- Compare function); the bag marker must agree with the panel rather than
+-- silently refusing a zero-scored item that the panel just promised was worth
+-- carrying.
+local function hasEmptySlot(identity)
+    local compare = LT.Compare
+    if type(compare) ~= "table" or type(compare.HasEmptySlotFor) ~= "function" then
+        return false
+    end
+    local ok, empty = pcall(compare.HasEmptySlotFor, compare, identity)
+    return ok and empty == true
+end
+
 -- One row, or nil when the item does not beat what is worn. The comparison's
 -- headline is the best swap for this item; rings and trinkets can target more
 -- than one slot, and the number the caller shows must match the slot it names.
-local function rowFor(link, identity, source, comparison)
+-- `emptySlot` lets a zero-difference row through: an item that fills an empty
+-- slot is worth carrying even when its score is zero.
+local function rowFor(link, identity, source, comparison, emptySlot, armour, bagID, bagSlot)
     local difference = tonumber(comparison.difference)
-    if not difference or difference <= 0 then return nil end
+    if not difference or difference < 0 then return nil end
+    if difference == 0 and not emptySlot then return nil end
 
     local slot = tonumber(comparison.referenceSlot)
     local headline = comparison.headline
@@ -364,8 +381,14 @@ local function rowFor(link, identity, source, comparison)
         slot          = slot,
         score         = score,
         delta         = difference,
+        emptySlot     = difference == 0,
+        armour        = tonumber(armour),
         requiredLevel = tonumber(identity.requiredLevel),
         source        = source,
+        -- Where it sits, so the window can equip it by location: this client
+        -- has no EquipItemByName (2026-11-05).
+        bagID         = tonumber(bagID),
+        bagSlot       = tonumber(bagSlot),
     }
 end
 
@@ -373,10 +396,10 @@ end
 -- The walk
 ------------------------------------------------------------------------------
 
-local function evaluate(link, source, context)
+local function evaluate(link, source, context, bagID, bagSlot)
     local itemStats = LT.ItemStats
 
-    local okGet, _, identity = pcall(itemStats.Get, itemStats, link)
+    local okGet, stats, identity = pcall(itemStats.Get, itemStats, link)
 
     -- The client answers for a link only once it has cached the item, so a
     -- missing identity may be "not yet" rather than "never". Such a scan is
@@ -389,17 +412,53 @@ local function evaluate(link, source, context)
 
     if not equippable(identity) then return end
 
+    -- One line per dropped item, capped per scan, so an item visible in the bag
+    -- with no arrow can be explained from the saved chat instead of a screenshot.
+    local function skip(why)
+        if type(LT.Diag) ~= "function" then return end
+        -- Its own switch: these lines answer "why has this item no arrow", which
+        -- is useful for a minute and noise for a session. They solved the
+        -- Forever empty-slot question on 2026-11-05 and are off by default now.
+        local options = LT.Database and LT.Database.GetOptions and LT.Database:GetOptions()
+        if type(options) ~= "table" or options.bagScanDiagnostics ~= true then return end
+        if (context.skipped or 0) >= 8 then return end
+        context.skipped = (context.skipped or 0) + 1
+        pcall(LT.Diag, LT, "[Bag] no mark: " .. tostring(nameFor(identity, nil, link))
+            .. " — " .. why
+            .. " (quality " .. tostring(identity.quality)
+            .. ", class " .. tostring(identity.classID) .. "/" .. tostring(identity.subClassID) .. ")")
+    end
+
     local verdict = verdictFor(link, identity, context.level)
-    if not verdict then return end
+    if not verdict then
+        skip("no verdict")
+        return
+    end
 
     local placement, required = GearCheck:Placement(verdict, identity, context.level)
-    if not placement then return end
+    if not placement then
+        skip("verdict " .. tostring(verdict.verdict) .. " key " .. tostring(verdict.key))
+        return
+    end
 
     local comparison = compareFor(link, context.buildIndex)
-    if not comparison then return end
+    if not comparison then
+        skip("no comparison")
+        return
+    end
 
-    local row = rowFor(link, identity, source, comparison)
-    if not row then return end
+    local row = rowFor(link, identity, source, comparison,
+        placement == "now" and hasEmptySlot(identity),
+        type(stats) == "table" and stats.armor or nil,
+        bagID, bagSlot)
+    if not row then
+        skip("difference " .. tostring(comparison.difference)
+            .. " at slot " .. tostring(comparison.referenceSlot
+                or (type(comparison.headline) == "table" and comparison.headline.slot))
+            .. " emptySlot=" .. tostring(hasEmptySlot(identity))
+            .. " equipLoc=" .. tostring(identity.equipLoc))
+        return
+    end
 
     if required then row.requiredLevel = required end
     if tonumber(verdict.unlockLevel) then row.unlockLevel = tonumber(verdict.unlockLevel) end
@@ -409,6 +468,114 @@ local function evaluate(link, source, context)
     else
         table.insert(context.now, row)
     end
+end
+
+-- T-46: a one-hander is not an upgrade on its own when the hands are full of a
+-- two-handed weapon. The package is 1H + the best shield in the bags, scored
+-- against the worn two-hander added whole. The delta is one number for two
+-- items, and the row carries both links so the caller can name and move them.
+--
+-- Pure part first, so /lt test can check the arithmetic without a client.
+function GearCheck.PackageDelta(wornScore, weaponScore, shieldScore)
+    local worn = tonumber(wornScore)
+    local weapon = tonumber(weaponScore)
+    local shield = tonumber(shieldScore)
+    if not worn or not weapon or not shield then return nil end
+    return (weapon + shield) - worn
+end
+
+local function scanWeaponPackage(context)
+    local gearSets = LT.GearSets
+    local score = LT.Score
+    local itemStats = LT.ItemStats
+    local usability = LT.Usability
+
+    if type(gearSets) ~= "table" or type(gearSets.GetEquippedLink) ~= "function" then return end
+    if type(score) ~= "table" or type(itemStats) ~= "table" then return end
+    if type(itemStats.GetIdentity) ~= "function" then return end
+
+    local scorer = score.ScoreItemWithImbue or score.ScoreItem
+    if type(scorer) ~= "function" then return end
+
+    local okMain, mainLink = pcall(gearSets.GetEquippedLink, gearSets, 16)
+    if not okMain or type(mainLink) ~= "string" or mainLink == "" then return end
+
+    local mainIdentity = itemStats:GetIdentity(mainLink)
+    if type(mainIdentity) ~= "table" or mainIdentity.equipLoc ~= "INVTYPE_2HWEAPON" then return end
+
+    local okWorn, worn = pcall(scorer, score, mainLink, context.buildIndex)
+    if not okWorn or type(worn) ~= "table" or not worn.ok then return end
+    local wornScore = tonumber(worn.score)
+    if not wornScore then return end
+
+    local api = containerAPI()
+    if not api then return end
+
+    local weapons, shields = {}, {}
+    local function consider(link, bag, slot)
+        local identity = itemStats:GetIdentity(link)
+        if type(identity) ~= "table" then return end
+
+        local equipLoc = identity.equipLoc
+        local isShield = equipLoc == "INVTYPE_SHIELD"
+        local isOneHand = equipLoc == "INVTYPE_WEAPON" or equipLoc == "INVTYPE_WEAPONMAINHAND"
+        if not isShield and not isOneHand then return end
+
+        local verdict = verdictFor(link, identity, context.level)
+        if type(verdict) ~= "table" or not usability or verdict.verdict ~= usability.USABLE then
+            return
+        end
+
+        local okScore, result = pcall(scorer, score, link, context.buildIndex)
+        if not okScore or type(result) ~= "table" or not result.ok then return end
+        local value = tonumber(result.score)
+        if not value then return end
+
+        local entry = { link = link, name = identity.name, score = value, bag = bag, slot = slot }
+        if isShield then
+            shields[#shields + 1] = entry
+        else
+            weapons[#weapons + 1] = entry
+        end
+    end
+
+    for bag = 0, (tonumber(NUM_BAG_SLOTS) or 4) do
+        local okSlots, count = pcall(api.slots, bag)
+        count = okSlots and tonumber(count) or 0
+        for slot = 1, count do
+            local okLink, link = pcall(api.link, bag, slot)
+            if okLink and type(link) == "string" and link ~= "" then consider(link, bag, slot) end
+        end
+    end
+
+    if #weapons == 0 or #shields == 0 then return end
+
+    local function best(list)
+        local winner
+        for _, entry in ipairs(list) do
+            if not winner or entry.score > winner.score then winner = entry end
+        end
+        return winner
+    end
+
+    local weapon = best(weapons)
+    local shield = best(shields)
+    local delta = GearCheck.PackageDelta(wornScore, weapon.score, shield.score)
+    if not delta or delta <= 0 then return end
+
+    table.insert(context.now, {
+        link      = weapon.link,
+        extraLink = shield.link,
+        name      = tostring(weapon.name or "one-hander") .. " + " .. tostring(shield.name or "shield"),
+        slot      = 16,
+        score     = weapon.score + shield.score,
+        delta     = delta,
+        armour    = 0,
+        package   = true,
+        source    = "bags",
+        bagID     = tonumber(weapon.bag),
+        bagSlot   = tonumber(weapon.slot),
+    })
 end
 
 local function scanBag(api, bag, source, context)
@@ -421,7 +588,7 @@ local function scanBag(api, bag, source, context)
 
         if okLink and type(link) == "string" and link ~= ""
             and not secretValue(link) and link:find("item:", 1, true) then
-            evaluate(link, source, context)
+            evaluate(link, source, context, bag, slot)
         end
     end
 end
@@ -429,6 +596,10 @@ end
 local function sortRows(rows)
     table.sort(rows, function(a, b)
         if a.delta ~= b.delta then return a.delta > b.delta end
+        -- Two items that score the same are not the same item: the one with more
+        -- armour is the better wear, and the per-slot choice keeps the first row.
+        local armourA, armourB = tonumber(a.armour) or 0, tonumber(b.armour) or 0
+        if armourA ~= armourB then return armourA > armourB end
         return tostring(a.link) < tostring(b.link)
     end)
 
@@ -518,7 +689,7 @@ function GearCheck:Scan(opts)
     local includeBank = opts.includeBank == true
 
     local key
-    if not includeBank then
+    if not includeBank and not opts.fresh then
         key = self:Key(buildIndex, level)
         local hit = self.cache[key]
         if hit then return LT:Copy(hit) end
@@ -535,6 +706,10 @@ function GearCheck:Scan(opts)
     for bag = 0, bagCount() do
         scanBag(api, bag, self.SOURCE_BAGS, context)
     end
+
+    -- T-46: only when the hands hold a two-handed weapon, and only from the bags
+    -- (a package is something the player is carrying).
+    pcall(scanWeaponPackage, context)
 
     local bankRoute
     if includeBank then
@@ -560,7 +735,7 @@ function GearCheck:Scan(opts)
     -- bags-only scan carries no field at all: there was no bank to name.
     if includeBank then result.bankRoute = bankRoute end
 
-    if includeBank or context.unreadable then
+    if includeBank or context.unreadable or opts.fresh then
         return result
     end
 

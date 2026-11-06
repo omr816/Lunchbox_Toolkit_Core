@@ -30,7 +30,7 @@ local Threat = {}
 LT.Threat = Threat
 
 Threat.PLUGIN_ID = "lunchbox_threat"
-Threat.VERSION = "1.0.0"
+Threat.VERSION = "1.0.1"
 
 ------------------------------------------------------------------------------
 -- Settings (own small table; the core keeps its own DB)

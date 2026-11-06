@@ -1,0 +1,13 @@
+## Interface: 16001
+## AllowLoadGameType: forever
+## ExcludeLoadGameType: standard, classic
+## Title: Lunchbox Toolkit — Druid
+## IconTexture: Interface\AddOns\LunchboxToolkit\Media\Inv_treasurechest_felfirecitadel_64
+## Notes: Adds Druid support to the Lunchbox Toolkit. Three BuffMonitor reminders, each off by default and per character: Mark of the Wild or Gift of the Wild missing on the player (druidMotwReminder), Thorns missing on the player (druidThornsReminder), and a feral build not wearing its Preferred form (druidFormReminder). Also adds a Druid page to the toolkit window, a confirmed-by-hand proc aura list for the combo strip, and a small form and power HUD. The core keeps its own cat and bear form reminders, its feral weights and its combo tracker; this folder never re-registers them.
+## Author: Lunchbox
+## Version: 1.0.1
+## SavedVariables: LunchboxToolkitDruidDB
+## Dependencies: LunchboxToolkit
+
+Druid.lua
+DruidHUD.lua

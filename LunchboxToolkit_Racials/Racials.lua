@@ -56,7 +56,7 @@ local Racials = {}
 LT.Racials = Racials
 
 Racials.PLUGIN_ID = "lunchbox_racials"
-Racials.VERSION = "1.0.0"
+Racials.VERSION = "1.0.1"
 
 ------------------------------------------------------------------------------
 -- Logging and secret-value guards

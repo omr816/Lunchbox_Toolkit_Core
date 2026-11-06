@@ -1,0 +1,10 @@
+{
+    "version":  "1.0.1",
+    "interface":  "16001",
+    "builtUtc":  "2026-11-06T11:36:21Z",
+    "sourceCommit":  "8e81fca",
+    "sourceDirty":  true,
+    "zip":  "LunchboxToolkit-1.0.1.zip",
+    "zipBytes":  735738,
+    "zipSha256":  "5F59110FB38FE37260E5725F95F51AEF1CBA8F539BFA8D079A30B34E4BEE38B1"
+}

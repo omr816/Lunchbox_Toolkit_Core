@@ -445,12 +445,25 @@ end
 -- The level the character is now. Levels.lua owns the scoring level; the
 -- plain unit level is the fallback for a client that cannot answer.
 local function playerLevel()
-    local levels = LT.Levels
-    local level = LT.player and tonumber(LT.player.level)
+    -- The unit's own level first. Levels:GetCurrentLevel() is the SCORING level,
+    -- which lags (the caps probe reported 1 while the character was 2, and the
+    -- build prompt stayed silent at 10 because it was told 9). The scoring level
+    -- is the fallback for a client without UnitLevel.
+    local level
 
-    if type(levels) == "table" and type(levels.GetCurrentLevel) == "function" then
+    if type(UnitLevel) == "function" then
+        local ok, unit = pcall(UnitLevel, "player")
+        if ok and tonumber(unit) then level = tonumber(unit) end
+    end
+
+    local levels = LT.Levels
+    if not level and type(levels) == "table" and type(levels.GetCurrentLevel) == "function" then
         local ok, current = pcall(levels.GetCurrentLevel, levels)
         if ok and tonumber(current) then level = tonumber(current) end
+    end
+
+    if not level then
+        level = LT.player and tonumber(LT.player.level)
     end
 
     return level
@@ -1948,12 +1961,6 @@ local INTRO_SWITCHES = {
             .. "you pick it up.",
     },
     {
-        key = "debugChat",
-        label = "Diagnostic lines in chat",
-        help = "Ticked, chat fills with what the addon is reading and why. Noisy; "
-            .. "it is for reporting a problem, not for playing.",
-    },
-    {
         key = "shamanImbueReminder",
         label = "Main-hand imbue reminder",
         onlyClass = "SHAMAN",
@@ -2709,6 +2716,7 @@ function Wizard:ApplyIntroAnswers()
     -- Spending the prompt is part of finishing: the tour is shown once and
     -- /lt setup is the way back to it.
     character.setupPrompted = true
+    character.introSeen = true
     if type(database.Save) == "function" then
         pcall(database.Save, database, "wizard:intro")
     end
@@ -2968,6 +2976,7 @@ function Wizard:Show(target)
     if window.lunchboxDim then window.lunchboxDim:Show() end
     window:Show()
     if window.Raise then window:Raise() end
+    self.buildShown = true
 
     return true
 end
@@ -3004,6 +3013,13 @@ end
 -- Hides this window and nothing else. UI.lua's window and its current page are
 -- never touched from here; the player keeps the main window exactly as it was.
 function Wizard:Hide()
+    -- Closing the introduction is the player saying "asked and answered"; a
+    -- click on Show is not. On Forever the first login puts the client's own
+    -- Experience Preset screens over ours, so a window that was shown can be
+    -- invisible (report 2026-11-05: no tour, setupPrompted already true).
+    local dismissingIntro = self.intro == true
+    local closingBuild = self.buildShown == true
+    self.buildShown = nil
     if frame then
         frame:Hide()
         if frame.lunchboxDim then frame.lunchboxDim:Hide() end
@@ -3015,6 +3031,18 @@ function Wizard:Hide()
     self.firstWritten = nil
     self.intro = nil
     self.introStep = nil
+    if dismissingIntro then self:MarkIntroSeen() end
+    if closingBuild then self:MarkBuildSeen() end
+end
+
+-- The build prompt counts as asked when the player closes or finishes it, not
+-- when it is shown: a window drawn under the client's own screens was burning
+-- the flag unseen (report 2026-11-05: "build wizard didnt happen").
+function Wizard:MarkBuildSeen()
+    local character = LT.Database and LT.Database.character
+    if type(character) ~= "table" then return end
+    character.buildPrompted = true
+    character.buildSeen = true
 end
 
 -- Closing before a save is the explicit "change nothing" exit. After build 1
@@ -3042,8 +3070,10 @@ function Wizard:ShouldPrompt()
     if type(character) ~= "table" then return false end
     if type(character.setup) == "table" then return false end
     -- Closing the prompt without Apply still counts as having been asked: the
-    -- player can always reopen with /lt setup.
-    if character.setupPrompted == true then return false end
+    -- player can always reopen with /lt setup. A flag written by a build that
+    -- set it on show (before 2026-11-05) has no introSeen, so it is re-offered
+    -- once: those characters never actually saw the tour.
+    if character.setupPrompted == true and character.introSeen == true then return false end
     -- Player decision 2026-11-05: the tour is offered once per character, not
     -- only to characters that have never been played. A release-day player with
     -- three existing alts must see it on each of them once.
@@ -3052,55 +3082,69 @@ function Wizard:ShouldPrompt()
     return type(classToken) == "string" and classToken ~= "UNKNOWN"
 end
 
+-- The introduction is "seen" when the player closes it or finishes it, never
+-- merely because it was shown. A session that showed it behind the client's own
+-- screens leaves the flag unset, so the next login offers it again.
+function Wizard:MarkIntroSeen()
+    local database = LT.Database
+    local character = database and database.character
+    if type(character) ~= "table" then return end
+    if character.setupPrompted == true then return end
+    character.setupPrompted = true
+    character.introSeen = true
+    if type(database.Save) == "function" then
+        pcall(database.Save, database, "wizard:prompted")
+    end
+end
+
 -- Called after PLAYER_LOGIN has finished elsewhere, so the class is known. The
 -- first login shows the introduction, not a build questionnaire: there is no
 -- specialisation before level 10 and nothing to build yet. The prompt is
--- recorded only when the window was actually shown, so a refused combat open
--- does not use it up.
+-- recorded only when the intro is dismissed, so a refused combat open and a
+-- window covered by the launch screens both still owe the tour.
 function Wizard:PromptIfNeeded()
     if not self:ShouldPrompt() then return false end
     if combatLocked() then return false end
 
-    local database = LT.Database
-    local character = database and database.character
-    if type(character) ~= "table" then return false end
-
-    local shown = self:ShowIntro()
-    if shown then
-        character.setupPrompted = true
-        if type(database.Save) == "function" then
-            pcall(database.Save, database, "wizard:prompted")
-        end
-    end
-    return shown
+    return self:ShowIntro()
 end
 
 -- The build wizard waits for level 10 - a talent point is not required. It opens
 -- once: closing it unanswered does not bring it back, and /lt setup is always
 -- available. `levelOverride` lets the level-up listener pass the level the client
 -- just reported, so a stale cached level cannot swallow the prompt.
+-- The skip reason is printed once per change, not once per event: on a levelling
+-- character every loot event asks, and the same sentence in chat five times reads
+-- like a fault rather than a diagnostic (player report 2026-11-05).
+local lastBuildPromptNote
+local function noteBuildPrompt(reason)
+    if lastBuildPromptNote == reason then return end
+    lastBuildPromptNote = reason
+    LT:Diag("build prompt: skipped, " .. reason)
+end
+
 function Wizard:ShouldBuildPrompt(levelOverride)
     local database = LT.Database
     local character = database and database.character
     if type(character) ~= "table" then return false end
     if type(character.setup) == "table" then
-        LT:Diag("build prompt: skipped, a build is already saved")
+        noteBuildPrompt("a build is already saved")
         return false
     end
-    if character.buildPrompted == true then
-        LT:Diag("build prompt: skipped, already asked once")
+    if character.buildPrompted == true and character.buildSeen == true then
+        noteBuildPrompt("already asked once")
         return false
     end
 
     local level = tonumber(levelOverride) or playerLevel()
     if not level or level < 10 then
-        LT:Diag("build prompt: skipped, level " .. tostring(level or "unknown"))
+        noteBuildPrompt("level " .. tostring(level or "unknown"))
         return false
     end
 
     local classToken = LT.player and LT.player.class
     if type(classToken) ~= "string" or classToken == "UNKNOWN" then
-        LT:Diag("build prompt: skipped, class not known yet")
+        noteBuildPrompt("class not known yet")
         return false
     end
     return true
@@ -3123,14 +3167,9 @@ function Wizard:BuildPromptIfNeeded(levelOverride)
     self.suggestedSpec = nil
     if not shown then return false end
 
-    local database = LT.Database
-    local character = database and database.character
-    if type(character) == "table" then
-        character.buildPrompted = true
-        if type(database.Save) == "function" then
-            pcall(database.Save, database, "wizard:build-prompted")
-        end
-    end
+    -- The prompt is spent when the window is closed (MarkBuildSeen), never here:
+    -- a window drawn behind the client's own screens used to burn the flag
+    -- unseen. See the note in Hide().
     return true
 end
 
@@ -3231,12 +3270,19 @@ do
     if ok and listener then
         pcall(listener.RegisterEvent, listener, "ADDON_LOADED")
         pcall(listener.RegisterEvent, listener, "PLAYER_LOGIN")
+        -- The tour waits for the world, not the login. On a fresh Forever
+        -- account the client shows its own Experience Preset and Ruleset
+        -- screens after login; opening our window one frame after PLAYER_LOGIN
+        -- would put it behind them.
+        pcall(listener.RegisterEvent, listener, "PLAYER_ENTERING_WORLD")
         -- Not every client raises this; the registration is guarded and the
         -- TALENTS_CHANGED listener below covers the clients that do not.
         pcall(listener.RegisterEvent, listener, "PLAYER_SPECIALIZATION_CHANGED")
         -- A level-up that lands mid-fight defers the level-10 question instead
         -- of spending it: this is the event that says the fight is over.
         pcall(listener.RegisterEvent, listener, "PLAYER_REGEN_ENABLED")
+
+        local firstRunAttempted = false
 
         local function firstRun()
             -- The introduction comes first. Once it has been shown the level-10
@@ -3273,14 +3319,22 @@ do
 
             if event == "PLAYER_LOGIN" then
                 Wizard:RegisterSlash()
+                return
+            end
 
-                -- One frame later: PLAYER_LOGIN also runs the core's module
-                -- stage, and the wizard needs the class that stage detects.
+            if event == "PLAYER_ENTERING_WORLD" then
+                -- Once per session, a moment after the world is up. On a fresh
+                -- Forever account the client shows its own Experience Preset and
+                -- Ruleset screens after login, so the tour must not race them;
+                -- it also needs the class the module stage detects.
+                if firstRunAttempted then return end
+                firstRunAttempted = true
                 if type(C_Timer) == "table" and type(C_Timer.After) == "function" then
-                    pcall(C_Timer.After, 0, firstRun)
+                    pcall(C_Timer.After, 0.5, firstRun)
                 else
                     firstRun()
                 end
+                return
             end
         end)
     else

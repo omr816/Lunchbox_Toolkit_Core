@@ -170,6 +170,96 @@ end
 
 local frame
 
+------------------------------------------------------------------------------
+-- Look: position, scale and background transparency
+--
+-- The player keeps the HUD open while levelling, so where it sits, how big it is
+-- and how much world it hides are per-character choices. All three are stored on
+-- the character and applied whenever the frame is built.
+------------------------------------------------------------------------------
+
+local function options()
+    local database = LT.Database
+    local character = database and database.character
+    return type(character) == "table" and character.options or nil
+end
+
+local function numberOption(key, fallback, low, high)
+    local stored = options()
+    local value = type(stored) == "table" and tonumber(stored[key]) or nil
+    if not value then value = fallback end
+    if value < low then value = low end
+    if value > high then value = high end
+    return value
+end
+
+local chromeFill
+local positionApplied = false
+
+-- Scale, then the background alpha. Only the fill is made transparent: the
+-- labels and the border stay at full strength so the readout stays legible.
+local function applyLook()
+    if not frame then return end
+
+    -- The saved spot is applied here as well as in build(): on login the frame
+    -- can be created before the character record exists, and then nothing ever
+    -- moved it back (player report 2026-11-05: "hud does not stay").
+    if not positionApplied then
+        local database = LT.Database
+        local character = database and database.character
+        local placed = type(character) == "table" and character.hudPosition or nil
+        if type(placed) == "table" and type(placed.point) == "string" then
+            frame:ClearAllPoints()
+            pcall(frame.SetPoint, frame, placed.point, UIParent,
+                placed.relativePoint or placed.point, placed.x or 0, placed.y or 0)
+            positionApplied = true
+        end
+    end
+
+    if type(frame.SetScale) == "function" then
+        pcall(frame.SetScale, frame, numberOption("shamanHudScale", 1, 0.5, 2))
+    end
+
+    local fill = chromeFill or frame.__ltBackground
+    if fill and type(fill.SetAlpha) == "function" then
+        pcall(fill.SetAlpha, fill, numberOption("shamanHudAlpha", 0.9, 0.1, 1))
+    end
+end
+
+function ShamanHUD:ApplyLook()
+    build()
+    applyLook()
+end
+
+-- Locked is the fighting state: no mouse, no drag, no panel. The cog toggles it
+-- and the choice is per character.
+function ShamanHUD:IsUnlocked()
+    local stored = options()
+    return type(stored) == "table" and stored.shamanHudUnlocked == true
+end
+
+function ShamanHUD:ApplyUnlock()
+    if not frame then return end
+    local unlocked = self:IsUnlocked()
+
+    if type(frame.EnableMouse) == "function" then
+        pcall(frame.EnableMouse, frame, unlocked)
+    end
+    local panel = frame.settingsPanel
+    if panel then
+        if unlocked then panel:Show() else panel:Hide() end
+    end
+end
+
+function ShamanHUD:ToggleUnlock()
+    local stored = options()
+    if type(stored) ~= "table" then return end
+    stored.shamanHudUnlocked = not (stored.shamanHudUnlocked == true)
+    self:ApplyUnlock()
+    LT:Print("Totem HUD " .. (stored.shamanHudUnlocked and "unlocked: drag it, sliders below."
+        or "locked."))
+end
+
 local function tint(label, key)
     local palette = LT.Palette
     if type(palette) ~= "table" or type(palette.Colour) ~= "function" then return label end
@@ -192,24 +282,102 @@ local function build()
     frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 40, -120)
     frame:SetFrameStrata("MEDIUM")
     frame:SetMovable(true)
-    frame:EnableMouse(true)
-    frame:SetClampedToScreen(true)
     frame:RegisterForDrag("LeftButton")
-    frame:SetScript("OnDragStart", frame.StartMoving)
-    frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+    frame:SetScript("OnDragStart", function(self)
+        -- Only an unlocked HUD moves; a locked one lets the mouse through so it
+        -- never eats a click while the player is fighting.
+        if not ShamanHUD:IsUnlocked() then return end
+        self:StartMoving()
+    end)
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        local database = LT.Database
+        local character = database and database.character
+        if type(character) ~= "table" then return end
+        if type(self.GetPoint) ~= "function" then return end
+        local ok, point, _, relativePoint, x, y = pcall(self.GetPoint, self, 1)
+        if not ok or type(point) ~= "string" then return end
+        character.hudPosition = {
+            point = point,
+            relativePoint = relativePoint or point,
+            x = x or 0,
+            y = y or 0,
+        }
+        positionApplied = true
+    end)
 
+    chromeFill = nil
     if LT.Chrome and type(LT.Chrome.Window) == "function" then
-        pcall(LT.Chrome.Window, frame)
-    else
+        local ok, chrome = pcall(LT.Chrome.Window, frame)
+        if ok and type(chrome) == "table" then chromeFill = chrome.fill end
+    end
+    if not chromeFill then
         local bg = frame:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         bg:SetColorTexture(0.04, 0.04, 0.04, 0.9)
+        frame.__ltBackground = bg
     end
+
+    -- Where the player last dragged it, then the stored scale and alpha.
+    positionApplied = false
+    frame:SetClampedToScreen(true)
+    applyLook()
 
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     title:SetPoint("TOPLEFT", 10, -8)
     title:SetText("Totems")
     tint(title, "brand")
+
+    -- The cog unlocks the HUD: drag, and the two sliders appear beneath it.
+    local cog = CreateFrame("Button", nil, frame)
+    cog:SetSize(18, 18)
+    cog:SetPoint("TOPRIGHT", -8, -5)
+    local cogIcon = cog:CreateTexture(nil, "ARTWORK")
+    if cogIcon then
+        cogIcon:SetAllPoints()
+        if type(cogIcon.SetTexture) == "function" then
+            pcall(cogIcon.SetTexture, cogIcon, "Interface\\Icons\\INV_Misc_Gear_01")
+        end
+    end
+    cog:SetScript("OnClick", function() ShamanHUD:ToggleUnlock() end)
+    frame.cog = cog
+
+    local panel = CreateFrame("Frame", nil, frame)
+    panel:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", 0, -6)
+    panel:SetSize(324, 68)
+    local panelBg = panel:CreateTexture(nil, "BACKGROUND")
+    if panelBg then
+        panelBg:SetAllPoints()
+        panelBg:SetColorTexture(0.02, 0.02, 0.02, 0.9)
+    end
+    frame.settingsPanel = panel
+
+    local ui = LT.UI
+    local function addSliderRow(offsetY, text, key, low, high, fallback)
+        local label = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        label:SetPoint("TOPLEFT", 8, offsetY)
+        label:SetText(text)
+
+        local valueText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        valueText:SetPoint("TOPRIGHT", -8, offsetY)
+        local current = numberOption(key, fallback, low, high)
+        valueText:SetText(string.format("%.2f", current))
+
+        if ui and type(ui.MakeSlider) == "function" then
+            local slider = ui:MakeSlider(panel, low, high, 0.05, current, function(value)
+                valueText:SetText(string.format("%.2f", value))
+                local stored = options()
+                if type(stored) == "table" then stored[key] = value end
+                applyLook()
+            end)
+            if slider then
+                slider:SetPoint("TOPLEFT", 8, offsetY - 16)
+            end
+        end
+    end
+
+    addSliderRow(-6, "Size", "shamanHudScale", 0.5, 1.6, 1)
+    addSliderRow(-38, "Opacity", "shamanHudAlpha", 0.1, 1, 0.9)
 
     local y = -30
     for i = 1, 4 do
@@ -260,6 +428,7 @@ local function build()
         pcall(frame.alert.SetWidth, frame.alert, 320)
     end
 
+    ShamanHUD:ApplyUnlock()
     frame:Hide()
     return frame
 end
@@ -590,7 +759,11 @@ function ShamanHUD:Refresh()
 
     build()
     frame:Show()
-    anchorAboveClientBar()
+    -- The client-bar anchor is only the starting place for a HUD the player has
+    -- never moved. Once a position is applied this must not run again: it ran on
+    -- every refresh and snapped the frame back after each reload (report
+    -- 2026-11-05).
+    if not positionApplied then anchorAboveClientBar() end
 
     local states = {}
     for i = 1, 4 do
@@ -753,6 +926,30 @@ end
 
 function ShamanHUD:Command(words)
     local action = tostring(words and words[2] or ""):lower()
+
+    if action == "scale" or action == "alpha" then
+        local key = action == "scale" and "shamanHudScale" or "shamanHudAlpha"
+        local low, high = 0.5, 2
+        if key == "shamanHudAlpha" then low, high = 0.1, 1 end
+
+        local value = tonumber(words and words[3])
+        if not value then
+            local current = numberOption(key, key == "scale" and 1 or 0.9, low, high)
+            LT:Print("Totem HUD " .. action .. " is " .. tostring(current)
+                .. " (/lt shamanhud " .. action .. " " .. tostring(low) .. "-" .. tostring(high) .. ")")
+            return true
+        end
+
+        if value < low then value = low end
+        if value > high then value = high end
+
+        local stored = options()
+        if type(stored) == "table" then stored[key] = value end
+        self:ApplyLook()
+        LT:Print("Totem HUD " .. action .. ": " .. tostring(value))
+        return true
+    end
+
     if action == "on" then
         self:SetEnabled(true)
     elseif action == "off" then

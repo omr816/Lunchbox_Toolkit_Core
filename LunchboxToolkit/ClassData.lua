@@ -763,14 +763,35 @@ end
 local function knowsAnySpell(names, ids)
     for _, name in ipairs(names or {}) do spellDisplayName(name) end
 
-    if type(IsPlayerSpell) ~= "function" then return nil end
+    if type(IsPlayerSpell) ~= "function" then
+        -- Forever has no IsPlayerSpell and no IsSpellKnown (first-day probe,
+        -- 2026-11-05), but the spellbook is readable (11 entries at level 1).
+        -- Use it by name so class reminders still work on this client instead of
+        -- going silent for every class. Substring match, same rule as
+        -- ClassData:KnowsSpellName.
+        if type(ClassData.KnowsSpellName) ~= "function" then return nil end
+        local sawName = false
+        for _, name in ipairs(names or {}) do
+            if type(name) == "string" and name ~= "" then
+                sawName = true
+                local ok, known = pcall(ClassData.KnowsSpellName, ClassData, name)
+                if ok and known == true then return true end
+            end
+        end
+        return sawName and false or nil
+    end
 
     local canTell = false
     for _, id in ipairs(ids or {}) do
         if type(id) == "number" then
-            canTell = true
             local ok, known = pcall(IsPlayerSpell, id)
-            if ok and known == true then return true end
+            -- Only a real boolean answer proves anything. A call that raises on
+            -- this client (Forever raises for some ids) leaves the gate unknown
+            -- rather than turning an error into "not learned".
+            if ok and type(known) == "boolean" then
+                if known == true then return true end
+                canTell = true
+            end
         end
     end
     if not canTell then return nil end

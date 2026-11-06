@@ -127,6 +127,12 @@ local function testCapSingleApplication(report)
         character.options.capBoostUnknown = true
         character.options.levellingBands = false
 
+        -- The mode boost is 1.0 while PvE levelling by design, so "the boost
+        -- happened" cannot be asserted against a real mode here. Pin the
+        -- multiplier: this test is about applying the policy exactly once.
+        local previousModeBoost = LT.Caps.GetModeBoost
+        LT.Caps.GetModeBoost = function() return 2, "selftest" end
+
         local key = LT.Profiles:Create("SelfTest caps")
         LT.Builds:SetProfile(1, key)
         LT.Profiles:SetWeight(key, "hit", 4)
@@ -147,9 +153,18 @@ local function testCapSingleApplication(report)
         -- The cap policy boosts the capped stat above its stored weight; the
         -- exact multiplier is the mode-dependent boost (not the old flat
         -- importance), so assert the boost happened, not a hardcoded number.
+        -- A nil boost is multiplied in as 1, so the status is printed: it says
+        -- whether the cap was entered at all and what multiplier it carried.
+        local capStatus = LT.Caps:GetStatus(LT.Profiles:Get(key), "hit", character.level)
+        local capDetail = "boost=" .. tostring(capStatus and capStatus.boost)
+            .. " enabled=" .. tostring(capStatus and capStatus.enabled)
+            .. " relevant=" .. tostring(capStatus and capStatus.relevant)
+            .. " known=" .. tostring(capStatus and capStatus.known)
+            .. " mode=" .. tostring(capStatus and capStatus.mode)
+
         check(report, "cap policy is applied exactly once",
-            type(first) == "number" and first > 4,
-            "expected hit boosted above 4, got " .. tostring(first))
+            type(first) == "number" and closeTo(first, 8, 0.0001),
+            "expected hit 4 x 2 = 8, got " .. tostring(first) .. " (" .. capDetail .. ")")
 
         check(report, "repeat recalculation does not compound the cap bonus",
             closeTo(first, second, 0.0001) and closeTo(second, third, 0.0001),
@@ -165,6 +180,8 @@ local function testCapSingleApplication(report)
         check(report, "an unmeasurable cap is not boosted by default",
             closeTo(LT.Profiles:GetEffective(1, { noCache = true }).weights.hit, 4, 0.0001),
             tostring(LT.Profiles:GetEffective(1, { noCache = true }).weights.hit))
+
+        LT.Caps.GetModeBoost = previousModeBoost
     end)
 end
 
@@ -173,6 +190,11 @@ local function testProfileIsolation(report)
         -- Same pin as the cap test: isolate isolation from the new defaults.
         character.options.capBoostUnknown = true
         character.options.levellingBands = false
+
+        -- Levelling mode boosts by 1.0 by design; pin a multiplier so "effective
+        -- differs from stored" has something to measure.
+        local previousModeBoost = LT.Caps.GetModeBoost
+        LT.Caps.GetModeBoost = function() return 2, "selftest" end
 
         local base = LT.ClassData:GetBaseProfile("shaman_enhancement_tank_pve")
         local original = base.weights.stamina
@@ -223,6 +245,8 @@ local function testProfileIsolation(report)
         check(report, "the two slots hold independent weights",
             not closeTo(one.stamina, two.stamina, 0.0001),
             tostring(one.stamina) .. " vs " .. tostring(two.stamina))
+
+        LT.Caps.GetModeBoost = previousModeBoost
     end)
 end
 
@@ -263,6 +287,11 @@ local function testPluginInterface(report)
         })
         check(report, "a plugin written for a newer API is refused",
             tooNew == nil and tooNewReason ~= nil, tooNewReason)
+
+        -- Re-enabling a plugin must return to what the profile weighs on its own.
+        -- That is not necessarily 1: a shaman base profile carries weaponDPS 1.08,
+        -- and the old literal 1 made this check fail on every shaman.
+        local baseWeaponDPS = LT.Profiles:GetEffective(1, { noCache = true }).weights.weaponDPS
 
         -- Two adjustments modelling the same benefit on the same stat.
         LT.PluginAPI:RegisterAdjustment("selftest.plugin", {
@@ -323,8 +352,9 @@ local function testPluginInterface(report)
         LT.Profiles:Invalidate()
         local disabled = LT.Profiles:GetEffective(1, { noCache = true })
         check(report, "a disabled plugin contributes nothing",
-            closeTo(disabled.weights.weaponDPS, 1, 0.0001),
-            "weaponDPS is " .. tostring(disabled.weights.weaponDPS))
+            closeTo(disabled.weights.weaponDPS, baseWeaponDPS, 0.0001),
+            "weaponDPS is " .. tostring(disabled.weights.weaponDPS)
+                .. ", profile " .. tostring(baseWeaponDPS))
 
         LT.Builds:SetPluginEnabled(1, "selftest.plugin", true)
         LT.PluginAPI:UnregisterPlugin("selftest.plugin")
@@ -748,6 +778,15 @@ local function testImbues(report)
         -- The switch is per slot: with the option off, slot 1 still scores and
         -- slot 2 still ignores. Slot 2's imbue is live, so the difference is
         -- the switch and not an empty imbue choice.
+        -- Slot 2 only exists above the level that unlocks it; below that,
+        -- SetImbue(2) writes nowhere and the test measured the level, not the
+        -- switch. Pin the slot count and create the slot for the duration.
+        local pinSlotCount = LT.Builds.SlotCountForLevel
+        local pinBuilds = LT.Database:Get().builds
+        local pinSlotTwo = pinBuilds[2]
+        LT.Builds.SlotCountForLevel = function() return 2 end
+        LT.Builds:EnsureForClass("SHAMAN")
+
         options.shamanImbueScoring = false
         LT.Builds:SetImbue(2, "windfury")
         LT.Builds:SetScoreImbue(1, true)
@@ -768,6 +807,9 @@ local function testImbues(report)
                 and slotOne.weaponDPS > 50 and slotTwo.weaponDPS == 50,
             "slot 1 " .. tostring(slotOne.weaponDPS)
                 .. ", slot 2 " .. tostring(slotTwo.weaponDPS))
+
+        pinBuilds[2] = pinSlotTwo
+        LT.Builds.SlotCountForLevel = pinSlotCount
 
         LT.Builds:SetScoreImbue(1, nil)
         LT.Builds:SetScoreImbue(2, nil)
@@ -804,6 +846,13 @@ local function testImbues(report)
         local builds = LT.Database:Get().builds
         local previousSlotTwo = builds[2]
 
+        -- Slot 2 does not exist below the level that unlocks it, so asking for a
+        -- blank slot 2 on a level-4 character created nothing and the check read
+        -- nil. The question is what a blank slot starts on, not how many slots
+        -- this character owns, so the slot count is pinned for the test.
+        local previousSlotCount = LT.Builds.SlotCountForLevel
+        LT.Builds.SlotCountForLevel = function() return 2 end
+
         local tankCreated = pcall(function()
             if classDefinition then classDefinition.defaultRole = "Tank" end
             builds[2] = nil
@@ -824,16 +873,19 @@ local function testImbues(report)
 
         local otherSlot = LT.Builds:Get(2)
         builds[2] = previousSlotTwo
+        LT.Builds.SlotCountForLevel = previousSlotCount
 
         check(report, "a blank Tank slot starts on rockbiter",
             tankCreated and tankSlot ~= nil and tankSlot.role == "Tank"
                 and tankSlot.imbue == "rockbiter",
-            tankSlot and (tostring(tankSlot.role) .. " / " .. tostring(tankSlot.imbue)))
+            "created=" .. tostring(tankCreated) .. " slot="
+                .. (tankSlot and (tostring(tankSlot.role) .. " / " .. tostring(tankSlot.imbue)) or "nil"))
 
         check(report, "a blank slot for any other role still starts on none",
             otherCreated and otherSlot ~= nil and otherSlot.role == "Healer"
                 and otherSlot.imbue == "none",
-            otherSlot and (tostring(otherSlot.role) .. " / " .. tostring(otherSlot.imbue)))
+            "created=" .. tostring(otherCreated) .. " slot="
+                .. (otherSlot and (tostring(otherSlot.role) .. " / " .. tostring(otherSlot.imbue)) or "nil"))
 
         options.shamanImbueScoring = previousFlag
         LT.player.class = previousClass
@@ -1484,6 +1536,36 @@ end
 
 -- Item usability: the verdicts the tooltip acts on. Pure calls, no character and
 -- no saved data involved, so nothing here can touch the player's records.
+-- Bind state: whether a gear-check row may be equipped from our window. The bug
+-- this guards (2026-11-05) read a bound item as unbound and refused to wear it.
+-- Pure: the classifier takes a line reader, so no client item is needed.
+local function testBindState(report)
+    local popup = LT.GearPopup
+
+    check(report, "the bind classifier is available",
+        type(popup) == "table" and type(popup.BindFromLines) == "function")
+    if type(popup) ~= "table" or type(popup.BindFromLines) ~= "function" then return end
+
+    local function from(lines)
+        return popup.BindFromLines(function(index) return lines[index] end)
+    end
+
+    check(report, "a worn item that says Soulbound reads as bound",
+        from({ "Cracked Egg Shells", "Binds when equipped", "Soulbound" }) == true)
+
+    check(report, "Binds when equipped alone reads as not bound",
+        from({ "Worn Leather Belt", "Binds when equipped" }) == false)
+
+    check(report, "Binds when picked up reads as not bound",
+        from({ "Some Trinket", "Binds when picked up" }) == false)
+
+    check(report, "a tooltip with no bind line answers nothing",
+        from({ "Cracked Egg Shells", "5 Armor" }) == nil)
+
+    check(report, "Soulbound outranks a Binds line in either order",
+        from({ "Soulbound", "Binds when equipped" }) == true)
+end
+
 local function testItemUsability(report)
     local usability = LT.Usability
 
@@ -1526,15 +1608,17 @@ local function testItemUsability(report)
     check(report, "mail is usable once the level is reached",
         mailAt40 == usability.USABLE, tostring(mailAt40))
 
-    -- A staff is learnable, so it must stay unknown rather than "never".
+    -- The shaman pack lists staves, so the class can use one: the verdict follows
+    -- the pack. Whether this character has trained it is a separate question the
+    -- client answers, and a false answer narrows it to "not trained yet".
     local staffAt30 = verdictOf(WEAPON, STAFF, 30)
-    check(report, "a learnable weapon stays unknown, not never",
-        staffAt30 == usability.UNKNOWN, tostring(staffAt30))
+    check(report, "a learnable weapon is usable because the pack lists it",
+        staffAt30 == usability.USABLE, tostring(staffAt30))
 
-    -- No confirmed level for leather, so no claim is made about it.
+    -- Leather is listed for a shaman, so it is usable; the pack is the claim.
     local leatherAt30 = verdictOf(ARMOUR, LEATHER, 30)
-    check(report, "an unlisted armour type stays unknown",
-        leatherAt30 == usability.UNKNOWN, tostring(leatherAt30))
+    check(report, "a listed armour type is usable",
+        leatherAt30 == usability.USABLE, tostring(leatherAt30))
 
     check(report, "a class with no pack stays unknown",
         usability:Classify({ classID = ARMOUR, subClassID = PLATE }, "NOT_A_CLASS", 60).verdict
@@ -1685,12 +1769,12 @@ local function testItemUsability(report)
     -- skill or an unanswerable question leaves today's behaviour untouched, and a
     -- refused weapon stays refused.
     local knownStaff = proficiencyVerdict("SHAMAN", STAFF, 60, true)
-    check(report, "a trained proficiency changes nothing",
-        knownStaff.verdict == usability.UNKNOWN, tostring(knownStaff.verdict))
+    check(report, "a trained proficiency leaves the pack usable",
+        knownStaff.verdict == usability.USABLE, tostring(knownStaff.verdict))
 
     local unaskedStaff = proficiencyVerdict("SHAMAN", STAFF, 60, nil)
-    check(report, "an unanswerable proficiency check changes nothing",
-        unaskedStaff.verdict == usability.UNKNOWN, tostring(unaskedStaff.verdict))
+    check(report, "an unanswerable proficiency leaves the pack usable",
+        unaskedStaff.verdict == usability.USABLE, tostring(unaskedStaff.verdict))
 
     local refusedSword = proficiencyVerdict("SHAMAN", SWORD1H, 60, false)
     check(report, "never outranks a missing proficiency",
@@ -1700,12 +1784,12 @@ local function testItemUsability(report)
     -- skill or an unanswerable question leaves today's behaviour untouched, and a
     -- refused weapon stays refused.
     local knownStaff = proficiencyVerdict("SHAMAN", STAFF, 60, true, "Horde")
-    check(report, "a trained proficiency changes nothing",
-        knownStaff.verdict == usability.UNKNOWN, tostring(knownStaff.verdict))
+    check(report, "a trained proficiency leaves the pack usable",
+        knownStaff.verdict == usability.USABLE, tostring(knownStaff.verdict))
 
     local unaskedStaff = proficiencyVerdict("SHAMAN", STAFF, 60, nil, "Horde")
-    check(report, "an unanswerable proficiency check changes nothing",
-        unaskedStaff.verdict == usability.UNKNOWN, tostring(unaskedStaff.verdict))
+    check(report, "an unanswerable proficiency leaves the pack usable",
+        unaskedStaff.verdict == usability.USABLE, tostring(unaskedStaff.verdict))
 
     local refusedSword = proficiencyVerdict("SHAMAN", SWORD1H, 60, false, "Horde")
     check(report, "never outranks a missing proficiency",
@@ -1750,6 +1834,31 @@ local function testItemUsability(report)
 
     check(report, "every trainer entry names a known weapon type and a location",
         badKey == nil, tostring(badKey))
+
+    -- Professions: both factions need both lists, every entry needs a trainer and
+    -- a zone, and each list starts with a junior trainer so a new character is
+    -- never sent to a capital first.
+    local badProfession = nil
+    for _, faction in ipairs({ "Horde", "Alliance" }) do
+        for _, profession in ipairs({ "Skinning", "Mining" }) do
+            local entries = usability:GetProfessionTraining(profession, faction)
+            if not entries then
+                badProfession = faction .. ": " .. profession .. " missing"
+            else
+                if not (entries[1] and entries[1].junior == true) then
+                    badProfession = faction .. ": " .. profession .. " does not start junior"
+                end
+                for _, entry in ipairs(entries) do
+                    if type(entry.trainer) ~= "string" or entry.trainer == ""
+                        or type(entry.zone) ~= "string" or entry.zone == "" then
+                        badProfession = faction .. ": " .. profession .. " entry incomplete"
+                    end
+                end
+            end
+        end
+    end
+    check(report, "every profession entry names a trainer and a zone, starting zone first",
+        badProfession == nil, tostring(badProfession))
 
     local badSpell = nil
     for key in pairs(usability.PROFICIENCY_SPELL) do
@@ -1986,8 +2095,10 @@ local function testChrome(report)
 
     check(report, "a window stores its regions on the frame",
         type(regions) == "table" and frame.ltChrome == regions)
-    check(report, "a window draws one fill and eight line textures",
-        #frame.textures == 9, tostring(#frame.textures))
+    -- 4 edge + 4 inner + 4 bevel + 1 fill. The bevel was added after this check
+    -- was written; the point of the check is that the count is exact and stable.
+    check(report, "a window draws one fill, eight lines and a four-sided bevel",
+        #frame.textures == 13, tostring(#frame.textures))
 
     local unpinned = 0
     for _, texture in ipairs(frame.textures) do
@@ -2017,7 +2128,7 @@ local function testChrome(report)
 
     chrome.Window(frame)
     check(report, "a second Window call repaints instead of stacking",
-        #frame.textures == 9, tostring(#frame.textures))
+        #frame.textures == 13, tostring(#frame.textures))
 
     if palette and palette.verdict and palette.verdict.go then
         chrome.Tint(frame, palette.verdict.go)
@@ -2032,8 +2143,9 @@ local function testChrome(report)
     local card = chrome.Card(cardFrame)
     chrome.Card(cardFrame)
 
-    check(report, "a card draws one edge and no inner line",
-        type(card) == "table" and #cardFrame.textures == 4,
+    -- 4 edge + 4 bevel: a card never has an inner line.
+    check(report, "a card draws one edge and a bevel, no inner line",
+        type(card) == "table" and #cardFrame.textures == 8,
         tostring(#cardFrame.textures))
 
     check(report, "a card's edge is the palette's card hairline",
@@ -2185,9 +2297,19 @@ local function testTooltipGates(report)
         not tooltip:IsWearable({ classID = 15, equipLoc = "INVTYPE_NON_EQUIP" })
             and not tooltip:IsWearable({ equipLoc = "INVTYPE_NON_EQUIP" }))
 
+    -- The grey exception asks the real inventory whether the item would fill an
+    -- empty slot, so on a character with a bare chest this check measured the
+    -- character, not the rule. Pin the answer for the duration.
+    local previousHasEmpty = LT.Compare and LT.Compare.HasEmptySlotFor
+    if LT.Compare then
+        LT.Compare.HasEmptySlotFor = function() return false end
+    end
     check(report, "a grey item is refused before it is scored",
         tooltip:GateReason({ quality = 0, classID = ARMOUR, equipLoc = "INVTYPE_CHEST" },
             false, false, { tooltipCombatShiftOnly = true }) == "poor quality")
+    if LT.Compare and previousHasEmpty then
+        LT.Compare.HasEmptySlotFor = previousHasEmpty
+    end
 
     local quiet = { tooltipCombatShiftOnly = true }
     local loud = { tooltipCombatShiftOnly = false }
@@ -2590,6 +2712,22 @@ local function testGearCheckPlacement(report)
     if type(gearCheck) ~= "table" or type(gearCheck.Placement) ~= "function"
         or type(usability) ~= "table" then
         return
+    end
+
+    -- T-46: the 1H + shield package measured against a worn two-hander.
+    if type(gearCheck.PackageDelta) == "function" then
+        check(report, "a package that beats the two-hander has a positive delta",
+            gearCheck.PackageDelta(100, 60, 50) == 10,
+            tostring(gearCheck.PackageDelta(100, 60, 50)))
+
+        check(report, "a package that loses has a negative delta",
+            gearCheck.PackageDelta(100, 40, 30) == -30,
+            tostring(gearCheck.PackageDelta(100, 40, 30)))
+
+        check(report, "a missing score answers nothing",
+            gearCheck.PackageDelta(100, nil, 30) == nil)
+    else
+        check(report, "the package comparator exists", false)
     end
 
     local function placement(verdict, required, current)
@@ -3281,6 +3419,7 @@ local suites = {
     { name = "dev page plumbing", fn = testDevPagePlumbing },
     { name = "class packs", fn = testClassPacks },
     { name = "item usability", fn = testItemUsability },
+    { name = "bind state", fn = testBindState, pure = true },
     { name = "palette", fn = testPalette },
     { name = "window chrome", fn = testChrome },
     { name = "tooltip panel text", fn = testTooltipPanelText },

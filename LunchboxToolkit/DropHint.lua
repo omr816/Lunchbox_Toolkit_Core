@@ -1895,13 +1895,29 @@ local function bagButtonHost()
     return nil
 end
 
+-- The client's own header buttons ("Clean Up Bags") sit on the same header. A
+-- child at the parent's frame level can be drawn under them, which is how our
+-- Sort button was reported missing on 2026-11-05 while the cleanup button was
+-- visible. Raise ours clear of the parent's level.
+local function raiseAbove(button, parent)
+    if type(button) ~= "table" or type(button.SetFrameLevel) ~= "function" then return end
+    if type(parent) ~= "table" or type(parent.GetFrameLevel) ~= "function" then return end
+    local ok, level = pcall(parent.GetFrameLevel, parent)
+    if ok and tonumber(level) then
+        pcall(button.SetFrameLevel, button, tonumber(level) + 20)
+    end
+end
+
 local function anchorBagButton(button, parent)
     if type(button) ~= "table" or type(button.ClearAllPoints) ~= "function" then return end
     button:ClearAllPoints()
-    -- Inside the header, on the top edge and left of the client's close button:
-    -- the title area stays readable, and a child of the frame cannot be covered
-    -- by a second bag window.
-    button:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -34, -4)
+    -- Outside the frame, on its left edge. The combined bag frame exposes no
+    -- named header children on this client ("header children" came back empty),
+    -- its search box covers the header, and anchoring above it can run off the
+    -- top of the screen when the window sits high. The strip left of the window
+    -- is empty on this layout and belongs to the client's own empty space.
+    button:SetPoint("TOPRIGHT", parent, "TOPLEFT", -6, 0)
+    raiseAbove(button, parent)
 end
 
 -- Takes the armed junk sale down. The markers come off with it: the next draw no
@@ -2196,6 +2212,25 @@ local function ensureBagButton()
     if not diagParentOnce and type(LT.Diag) == "function" then
         diagParentOnce = true
         pcall(LT.Diag, LT, "[Bag] button parent=" .. frameName(bagButtonParent))
+
+        -- The header is the client's own layout: the search box and its cleanup
+        -- button sit somewhere in it, and guessing coordinates put ours under
+        -- them. Name the children once so the anchor can be fitted to what is
+        -- really there.
+        if type(bagButtonParent.GetChildren) == "function" then
+            local okChildren, children = pcall(bagButtonParent.GetChildren, bagButtonParent)
+            if okChildren and type(children) == "table" then
+                local names = {}
+                for index, child in ipairs(children) do
+                    if index > 14 then break end
+                    local name = type(child.GetName) == "function" and select(2, pcall(child.GetName, child)) or nil
+                    if type(name) == "string" and name ~= "" then
+                        names[#names + 1] = name
+                    end
+                end
+                pcall(LT.Diag, LT, "[Bag] header children: " .. table.concat(names, ", "))
+            end
+        end
     end
 
     return bagButton
@@ -2204,6 +2239,8 @@ end
 -- The label follows the state: "Sell junk" only at a merchant with junk selling
 -- allowed, "Sort" everywhere else. The tooltip is rewritten with it, because one
 -- press means two different things.
+local ensureDropButton
+
 function DropHint:UpdateBagButtons()
     if inCombatNow() then return end
 
@@ -2226,6 +2263,205 @@ function DropHint:UpdateBagButtons()
                 .. tostring(DropHint.ARM_SECONDS) .. " seconds sells exactly those.")
             or "Sort the bags with the client's own sort. One press, no confirmation.")
     end
+
+    ensureDropButton()
+end
+
+------------------------------------------------------------------------------
+-- Destroy the cheapest junk item
+-- The request on 2026-11-05 was a button for a full bag. Destroying is
+-- irreversible, so it is deliberately narrow: the cheapest grey or WHITE item,
+-- out of combat, two presses with the name printed in between.
+------------------------------------------------------------------------------
+
+local DROP_TEXT = "Drop junk"
+local DROP_ARM_SECONDS = 5
+local dropButton, dropButtonParent
+local dropArmedKey, dropArmedAt = nil, 0
+
+local function anchorDropButton(button, parent)
+    if type(button) ~= "table" or type(button.ClearAllPoints) ~= "function" then return end
+    button:ClearAllPoints()
+    if bagButton then
+        button:SetPoint("TOPRIGHT", bagButton, "BOTTOMRIGHT", 0, -6)
+    else
+        button:SetPoint("TOPRIGHT", parent, "TOPLEFT", -6, -26)
+    end
+    raiseAbove(button, parent)
+end
+
+ensureDropButton = function()
+    if inCombatNow() then return nil end
+
+    local parent = bagButtonHost()
+    if not parent or not bagButton then
+        if type(LT.Diag) == "function" then
+            pcall(LT.Diag, LT, "[Bag] drop button: skipped, host="
+                .. tostring(parent ~= nil) .. " sort=" .. tostring(bagButton ~= nil))
+        end
+        return nil
+    end
+
+    if dropButton and dropButtonParent ~= parent and type(dropButton.SetParent) == "function" then
+        if pcall(dropButton.SetParent, dropButton, parent) then
+            dropButtonParent = parent
+            anchorDropButton(dropButton, parent)
+        end
+    end
+
+    if not dropButton then
+        dropButton = plainButton(parent, DROP_TEXT, 92, 20, function()
+            DropHint:DropButtonClick()
+        end)
+        if not dropButton then
+            if type(LT.Diag) == "function" then
+                pcall(LT.Diag, LT, "[Bag] drop button: plainButton returned nothing")
+            end
+            return nil
+        end
+
+        dropButtonParent = parent
+        anchorDropButton(dropButton, parent)
+
+        if type(LT.Diag) == "function" then
+            local okPoint, point, _, _, x, y = pcall(dropButton.GetPoint, dropButton, 1)
+            if not okPoint then point, x, y = "error", nil, nil end
+            pcall(LT.Diag, LT, "[Bag] drop button: created at "
+                .. tostring(point) .. " " .. tostring(x) .. "," .. tostring(y)
+                .. " shown=" .. tostring(dropButton:IsShown()))
+        end
+        attachTooltip(dropButton, "Destroy the cheapest junk item in the bags: grey or "
+            .. "white, never food, drink or a potion, and never anything with a stat. "
+            .. "First press names it, a second press within " .. tostring(DROP_ARM_SECONDS)
+            .. " seconds destroys it. Never in combat.")
+    end
+
+    return dropButton
+end
+
+-- Only a bonus stat makes an item worth keeping. Armour, weapon damage and speed
+-- are what a grey *is*: excluding them made every grey item "carrying a stat", so
+-- the button saw nothing to drop (player report 2026-11-05).
+local KEEP_STATS = {
+    stamina = true, strength = true, agility = true, intellect = true, spirit = true,
+    hit = true, crit = true, haste = true, expertise = true, spellCrit = true,
+    spellPower = true, attackPower = true, mp5 = true, spellHit = true,
+}
+
+local function isJunk(row, why)
+    if type(row) ~= "table" or type(row.link) ~= "string" then
+        if why then why[1] = "no link" end
+        return false
+    end
+
+    local itemStats = LT.ItemStats
+    if type(itemStats) ~= "table" or type(itemStats.GetIdentity) ~= "function" then
+        if why then why[1] = "no item stats" end
+        return false
+    end
+
+    local identity = itemStats:GetIdentity(row.link)
+    if type(identity) ~= "table" then
+        if why then why[1] = "no identity" end
+        return false
+    end
+
+    local quality = tonumber(identity.quality)
+    if not quality or quality > 1 then
+        if why then why[1] = "quality " .. tostring(identity.quality) end
+        return false
+    end
+
+    -- 0 is the consumable class: food, drink, potions, scrolls.
+    if tonumber(identity.classID) == 0 then
+        if why then why[1] = "consumable" end
+        return false
+    end
+
+    if type(itemStats.Get) == "function" then
+        local okStats, stats = pcall(itemStats.Get, itemStats, row.link)
+        if not okStats then
+            if why then why[1] = "stats unreadable" end
+            return false
+        end
+        if type(stats) == "table" then
+            for key in pairs(stats) do
+                if KEEP_STATS[key] then
+                    if why then why[1] = "has " .. tostring(key) end
+                    return false
+                end
+            end
+        end
+    end
+
+    return true
+end
+
+-- `commit` false names the item and arms; true destroys it. Returns
+-- ok, message, key. Only a grey or white, non-consumable item is ever destroyed.
+function DropHint:DropGrey(commit)
+    if inCombatNow() then return false, "Not in combat: nothing was dropped." end
+
+    local rows = self:Scan()
+    if not rows then return false, "The bags could not be read." end
+
+    local candidates = {}
+    local seen = 0
+    local reasons = {}
+    for _, row in ipairs(rows) do
+        local why = {}
+        if isJunk(row, why) then
+            candidates[#candidates + 1] = row
+        elseif seen < 3 then
+            seen = seen + 1
+            reasons[#reasons + 1] = tostring(row.name or "?") .. " (" .. tostring(why[1]) .. ")"
+        end
+    end
+
+    local cheapest = #candidates > 0 and DropHint.Rank(candidates, ignoreList(), 1).cheapest or nil
+    if not cheapest then
+        local detail = #reasons > 0 and (" — " .. table.concat(reasons, "; ")) or ""
+        return false, "No grey or white non-food item to drop; nothing was destroyed." .. detail
+    end
+
+    local identity = LT.ItemStats:GetIdentity(cheapest.link)
+    local key = tostring(cheapest.bag) .. ":" .. tostring(cheapest.slot)
+    local name = tostring(cheapest.name or (identity and identity.name) or "item")
+
+    if not commit then
+        return true, "Press again within " .. tostring(DROP_ARM_SECONDS)
+            .. "s to destroy " .. name .. ".", key
+    end
+
+    local pickup = (type(C_Container) == "table" and C_Container.PickupContainerItem)
+        or PickupContainerItem
+    if type(pickup) ~= "function" or type(DeleteCursorItem) ~= "function" then
+        return false, "This client does not allow destroying items from the bags.", key
+    end
+
+    if not pcall(pickup, cheapest.bag, cheapest.slot) then
+        return false, "The client refused to pick " .. name .. " up.", key
+    end
+    if not pcall(DeleteCursorItem) then
+        return false, name .. " was picked up but not destroyed.", key
+    end
+
+    return true, "Destroyed " .. name .. ".", key
+end
+
+function DropHint:DropButtonClick()
+    local now = type(GetTime) == "function" and GetTime() or 0
+    local confirm = dropArmedKey ~= nil and (now - dropArmedAt) <= DROP_ARM_SECONDS
+
+    local ok, message, key = self:DropGrey(confirm)
+    if ok and not confirm then
+        dropArmedKey, dropArmedAt = key, now
+    else
+        dropArmedKey, dropArmedAt = nil, 0
+    end
+
+    LT:Print(tostring(message))
+    self:Changed()
 end
 
 -- One item id goes on the account-wide list or comes off it, and everything that
@@ -2786,13 +3022,12 @@ function DropHint:RefreshMarkers()
 
         -- The scan is one per opening and is asked for before the vendor hook,
         -- so the plugin's own call to GearCheck finds the cache already warm.
-        -- It is opt-in: with "Check gear when bags open" off, opening the bags
-        -- costs no scan, and a set from a previous opening is dropped.
-        if option("gearCheckOnBagOpen") then
-            ensureUpgradeScan()
-        else
-            invalidateUpgradeScan()
-        end
+        -- The arrow on a bag item is a marker, not a window: the option's own
+        -- help says it is drawn either way. Gating the scan on the option meant
+        -- no arrow was ever drawn with the option off (its default), which is
+        -- exactly what the player saw on 2026-11-05. The scan is one per bag
+        -- opening and cached, so drawing the arrow costs nothing extra.
+        ensureUpgradeScan()
         ensureVendorHook()
         ensureJunkPainter()
 

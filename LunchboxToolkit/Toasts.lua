@@ -723,7 +723,7 @@ function Toasts:ScanUpgradeNow()
     local gear = LT.GearCheck
     if type(gear) ~= "table" or type(gear.Scan) ~= "function" then return false end
 
-    local ok, result = pcall(gear.Scan, gear)
+    local ok, result = pcall(gear.Scan, gear, { fresh = true })
     if not ok or type(result) ~= "table" then return false end
 
     local best
@@ -787,7 +787,11 @@ Toasts.CAMPFIRE_NAMES = {
 Toasts.CAMPFIRE_EXPIRY_WARNING = 2 * 60 * 1000   -- "nearly up": under two minutes
 
 Toasts.CAMPFIRE_TEXT = {
-    fire     = "Fire: +Spirit buff; XP food if you have it",
+    -- The client's own aura (probe, 2026-11-05): "Welcoming Campfire", id
+    -- 1289723, 60 seconds. The Cozy Sleeping Bag claim is the launch client's own
+    -- tip, still unconfirmed by an aura read, so it is named as the bag's rule and
+    -- not as the fire's.
+    fire     = "Fire: Welcoming Campfire, 60 s. Cozy Sleeping Bag: 3 min for +3% XP, 2 h",
     received = "Buff received",
     expires  = "Fire buff expires - find another",
 }

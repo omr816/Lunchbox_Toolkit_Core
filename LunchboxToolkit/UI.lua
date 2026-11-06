@@ -9,6 +9,16 @@ local LT = LunchboxToolkit
 
 local UI = {}
 LT.UI = UI
+
+-- The one line the Windfury row can add without a second list: the recorded
+-- averages, straight from Trackers. Empty when nothing is recorded.
+function UI:WindfuryLabel()
+    local trackers = LT.Trackers
+    if type(trackers) ~= "table" or type(trackers.WindfurySummary) ~= "function" then return "" end
+    local ok, summary = pcall(trackers.WindfurySummary, trackers)
+    if ok and type(summary) == "string" and summary ~= "" then return " — " .. summary end
+    return ""
+end
 LT.Modules.UI = UI
 
 local PAGES = {
@@ -353,6 +363,45 @@ local function MakeCheck(parent, checked, onClick)
 
     paint(box, checked == true)
     return box
+end
+
+-- A horizontal slider for a numeric option. The thumb is a plain texture and the
+-- track a thin line, so it needs no template the client might not ship. The value
+-- is written by the row's `apply`, never held here. It lives on UI rather than in
+-- a chunk local because UI.lua is at Lua's 200-local limit.
+function UI:MakeSlider(parent, min, max, step, value, onValue)
+    local slider = CreateFrame("Slider", nil, parent)
+    slider:SetOrientation("HORIZONTAL")
+    slider:SetSize(150, 16)
+    slider:SetMinMaxValues(min, max)
+    slider:SetValueStep(step)
+    if type(slider.SetObeyStepOnDrag) == "function" then
+        pcall(slider.SetObeyStepOnDrag, slider, true)
+    end
+
+    local track = slider:CreateTexture(nil, "BACKGROUND")
+    track:SetHeight(2)
+    track:SetPoint("LEFT", 0, 0)
+    track:SetPoint("RIGHT", 0, 0)
+    track:SetColorTexture(0.35, 0.32, 0.22, 0.9)
+
+    local thumb = slider:CreateTexture(nil, "OVERLAY")
+    thumb:SetSize(10, 16)
+    thumb:SetColorTexture(0.85, 0.80, 0.55, 1)
+    slider:SetThumbTexture(thumb)
+
+    if type(slider.SetValue) == "function" then
+        local okValue = pcall(slider.SetValue, slider, tonumber(value) or min)
+        if not okValue then pcall(slider.SetValue, slider, min) end
+    end
+
+    slider:SetScript("OnValueChanged", function(self, newValue)
+        local number = tonumber(newValue)
+        if not number then return end
+        if type(onValue) == "function" then onValue(number) end
+    end)
+
+    return slider
 end
 
 -- The one combat test every popup and the Ranks page share. Creating a frame is
@@ -5756,8 +5805,8 @@ function UI:DrawActions(cursor)
             .. "the popup offer, in one place.", buttons = {
             { label = "Scan the bags", run = "scan", help = "Lists the upgrades in the "
                 .. "bags: wear now, and what a level unlocks." },
-            { label = "Windfury records", run = "wf", help = "Shaman only: the recorded "
-                .. "Windfury procs." },
+            { label = "Windfury records" .. UI:WindfuryLabel(), run = "wf",
+              help = "Shaman only: the recorded Windfury procs." },
             { label = "Tracker status", run = "trackers status", help = "Combo tracker, "
                 .. "windfury availability, and where the frame sits." },
           } },
@@ -8631,6 +8680,10 @@ local function drawSettings(cursor)
                   .. "point on the ring. Off by default: the addon also registers in the "
                   .. "client's addon compartment, which is the normal launcher. /lt still "
                   .. "opens the window." },
+            { key = "weaponTrainerHint", label = "Weapon trainer hint",
+              default = true,
+              help = "Entering a city whose weapon master teaches a type you have not "
+                  .. "trained raises one toast, once per city per session." },
             { key = "shamanTotemBar", label = "Show the Shaman totem bar",
               default = true,
               apply = function(value)
@@ -8642,6 +8695,31 @@ local function drawSettings(cursor)
                   .. "each totem's time left, for a Shaman only. It never takes the mouse "
                   .. "and has no close button, so this switch is how it is turned on and "
                   .. "off. Also /lt shamanhud on|off." },
+            { key = "shamanHudScale", label = "Totem bar size",
+              slider = { min = 0.5, max = 1.6, step = 0.05, default = 1,
+                  format = function(value) return string.format("%.2f", value) end },
+              apply = function(value)
+                  LT.Database:GetOptions().shamanHudScale = value
+                  LT.Database:Save("settings:shamanHudScale")
+                  if LT.ShamanHUD and type(LT.ShamanHUD.ApplyLook) == "function" then
+                      LT.ShamanHUD:ApplyLook()
+                  end
+              end,
+              help = "How big the totem bar draws, 0.5 to 1.6. It scales the whole frame, "
+                  .. "text included. Also /lt shamanhud scale <n>." },
+            { key = "shamanHudAlpha", label = "Totem bar background opacity",
+              slider = { min = 0.1, max = 1, step = 0.05, default = 0.9,
+                  format = function(value) return string.format("%.2f", value) end },
+              apply = function(value)
+                  LT.Database:GetOptions().shamanHudAlpha = value
+                  LT.Database:Save("settings:shamanHudAlpha")
+                  if LT.ShamanHUD and type(LT.ShamanHUD.ApplyLook) == "function" then
+                      LT.ShamanHUD:ApplyLook()
+                  end
+              end,
+              help = "How much of the world shows through the totem bar's background, "
+                  .. "0.1 to 1. Only the fill fades: the labels and the border stay sharp. "
+                  .. "Also /lt shamanhud alpha <n>." },
             { key = "shamanImbueGlow", label = "Glow the imbue action buttons",
               default = true,
               apply = function(value)
@@ -8689,11 +8767,6 @@ local function drawSettings(cursor)
               default = false,
               help = "One bag scan each time a quest is turned in, out of combat. Off by "
                   .. "default: the level-up check and /lt scan cover the same ground." },
-            { key = "debugChat", label = "Diagnostic lines in chat",
-              default = false,
-              help = "Development only. Prints the addon's own diagnostic lines (bag walk, "
-                  .. "probe results) to chat. Off by default; /lt debug toggles it for the "
-                  .. "session without changing this saved switch." },
             { key = "bagFrames", label = "Bag frames", cycle = {
                 get = function()
                     local db = LT.Database
@@ -8892,9 +8965,47 @@ local function drawSettings(cursor)
         local minWidth = SETTINGS_CHECK_X + settingsTextWidth(block.heading) + 12
 
         for _, row in ipairs(area.rows) do
-            -- A cycle row is one button whose text is the current value; the
-            -- label is inside the button, so it needs no checkbox beside it.
-            if row.cycle then
+            -- A slider row: the label on its own line, the control beneath it and
+            -- the current value printed beside the knob.
+            if row.slider then
+                local spec = row.slider
+                local current = tonumber(options[row.key]) or tonumber(spec.default) or spec.min
+                if current < spec.min then current = spec.min end
+                if current > spec.max then current = spec.max end
+
+                local label = MakeLabel(contentFrame, row.label, "GameFontNormalSmall")
+                label:SetJustifyH("LEFT")
+                settingsOneLine(label)
+
+                local valueLabel = MakeLabel(contentFrame,
+                    spec.format and spec.format(current) or tostring(current),
+                    "GameFontNormalSmall", LT.Palette.named.brand)
+                settingsOneLine(valueLabel)
+
+                local slider = UI:MakeSlider(contentFrame, spec.min, spec.max,
+                    spec.step or 0.05, current, function(value)
+                        if spec.format then valueLabel:SetText(spec.format(value)) end
+                        if row.apply then
+                            pcall(row.apply, value)
+                        else
+                            options[row.key] = value
+                            LT.Database:Save("settings:" .. row.key)
+                        end
+                    end)
+
+                local info = MakeInfo(contentFrame, row.label, row.help)
+
+                table.insert(block.rows, {
+                    row = row,
+                    label = label,
+                    slider = slider,
+                    valueLabel = valueLabel,
+                    info = info,
+                })
+
+                local rowMin = SETTINGS_LABEL_X + 150 + 8 + 40
+                if rowMin > minWidth then minWidth = rowMin end
+            elseif row.cycle then
                 local cycle = row.cycle
                 local value = cycle.get and cycle.get() or options[row.key]
                 local text = cycle.format and cycle.format(value) or tostring(value)
@@ -9082,6 +9193,9 @@ local function drawSettings(cursor)
         for _, row in ipairs(block.rows) do
             if row.button then
                 row.step = SETTINGS_ROW_MIN
+            elseif row.slider then
+                -- Label line plus the slider beneath it.
+                row.step = math.max(SETTINGS_ROW_MIN, settingsTextHeight(row.label) + 2) + 20
             else
                 row.step = math.max(SETTINGS_ROW_MIN, settingsTextHeight(row.label) + 2)
             end
@@ -9186,6 +9300,22 @@ local function drawSettings(cursor)
                 if row.info then
                     row.info:ClearAllPoints()
                     row.info:SetPoint("LEFT", row.button, "RIGHT", 6, 0)
+                end
+            elseif row.slider then
+                row.label:ClearAllPoints()
+                row.label:SetPoint("TOPLEFT", contentFrame, "TOPLEFT",
+                    x + SETTINGS_LABEL_X, y)
+
+                row.slider:ClearAllPoints()
+                row.slider:SetPoint("TOPLEFT", contentFrame, "TOPLEFT",
+                    x + SETTINGS_LABEL_X, y - 20)
+
+                row.valueLabel:ClearAllPoints()
+                row.valueLabel:SetPoint("LEFT", row.slider, "RIGHT", 8, 0)
+
+                if row.info then
+                    row.info:ClearAllPoints()
+                    row.info:SetPoint("LEFT", row.valueLabel, "RIGHT", 4, 0)
                 end
             else
                 row.check:ClearAllPoints()

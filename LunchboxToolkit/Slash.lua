@@ -36,6 +36,7 @@ local helpLines = {
     "/lt weight <stat> <value> — edit the active slot's custom profile",
     "/lt weights — list the stat keys a weight can be set for",
     "/lt caps — show cap status, including what is still needed",
+    "/lt train — where to learn Skinning and Mining, starter zone first",
     "/lt score [item link] — score an item against both slots",
     "/lt why — why the last tooltip showed no panel",
     "/lt unknown [clear] — stat keys the client reports but this build does not model",
@@ -58,7 +59,6 @@ local helpLines = {
     "/lt probe — client APIs and current tracker values",
     "/lt probe log on|off — print the first 10 combat-log events, then stop",
     "/lt debug — toggle debug output",
-    "/lt diag chat on|off — diagnostic lines in chat, for this character",
 }
 
 local extra = {}
@@ -909,43 +909,6 @@ function commands.debug()
     LT:Print("Debug output " .. (LT.DEBUG and "on" or "off") .. ".")
 end
 
--- /lt diag chat on|off: the per-character chat switch for LT:Diag. It is stored
--- in the character's options, so it survives a reload and does not follow the
--- player to an alt. Nothing here prints unless the option was written or read.
-function commands.diag(words)
-    local database = LT.Database
-    if type(database) ~= "table" or type(database.GetOptions) ~= "function" then
-        LT:Error("Saved variables are not available yet. Try again after the character loads.")
-        return
-    end
-
-    local ok, options = pcall(database.GetOptions, database)
-    if not ok or type(options) ~= "table" then
-        LT:Error("The saved options could not be read.")
-        return
-    end
-
-    local scope = string.lower(words[2] or "")
-    local state = string.lower(words[3] or "")
-    if scope ~= "chat" then
-        LT:Print("Usage: /lt diag chat on|off")
-        return
-    end
-
-    if state == "on" or state == "off" then
-        options.debugChat = (state == "on")
-        if type(database.Save) == "function" then
-            pcall(database.Save, database, "diag:chat")
-        end
-    elseif state ~= "" then
-        LT:Print("Usage: /lt diag chat on|off")
-        return
-    end
-
-    LT:Print("Diagnostic chat lines " .. (options.debugChat == true and "on" or "off")
-        .. " for this character.")
-end
-
 -- The combo-point tracker and its diagnostics. Everything the command prints
 -- and every guard on the client APIs live in Trackers; this only routes words.
 function commands.trackers(words)
@@ -1186,6 +1149,42 @@ end
 -- Dispatch
 ------------------------------------------------------------------------------
 
+-- Forever's junior trainers stand in the starting zones and teach Apprentice
+-- only; the city trainers teach every rank. The table and its source live in
+-- Usability, which loads before this file.
+function commands.train()
+    local usability = LT.Usability
+    if type(usability) ~= "table" or type(usability.GetProfessionTraining) ~= "function" then
+        LT:Warn("The usability module is not loaded.")
+        return
+    end
+
+    local faction = (LT.player and LT.player.faction) or "Horde"
+    local professions = { "Skinning", "Mining" }
+    local printed = 0
+
+    LT:Print("Profession trainers — " .. faction
+        .. " (Forever lists, read 2026-11-05)")
+    for _, profession in ipairs(professions) do
+        local entries = usability:GetProfessionTraining(profession, faction)
+        if entries then
+            for _, entry in ipairs(entries) do
+                local line = profession .. ": " .. tostring(entry.trainer)
+                    .. " — " .. tostring(entry.zone)
+                if entry.junior then
+                    line = line .. "  [junior: Apprentice only, to 75]"
+                end
+                LT:Print(line)
+                printed = printed + 1
+            end
+        end
+    end
+
+    if printed == 0 then
+        LT:Print("No profession trainers are listed for this faction.")
+    end
+end
+
 local dispatch = {
     ["help"] = commands.help, ["?"] = commands.help,
     ["ui"] = commands.ui, ["open"] = commands.ui,
@@ -1212,6 +1211,24 @@ local dispatch = {
     ["weight"] = commands.weight,
     ["weights"] = commands.weights,
     ["caps"] = commands.caps,
+    ["lbs"] = function(words)
+        local advisor = LT.SpecAdvisor
+        if type(advisor) ~= "table" or type(advisor.Command) ~= "function" then
+            LT:Print("The talent advisor module is not loaded.")
+            return
+        end
+        advisor:Command(words)
+    end,
+    ["train"] = commands.train,
+    ["trainers"] = commands.train,
+    ["glowdebug"] = function()
+        local glow = LT.TalentFrameGlow
+        if type(glow) ~= "table" or type(glow.RefreshModern) ~= "function" then
+            LT:Print("The talent glow module is not loaded.")
+            return
+        end
+        glow:RefreshModern(true)
+    end,
     ["score"] = commands.score,
     ["why"] = commands.why,
     ["unknown"] = commands.unknown,
@@ -1232,7 +1249,6 @@ local dispatch = {
     ["imbue"] = commands.imbue,
     ["plugins"] = commands.plugins,
     ["debug"] = commands.debug,
-    ["diag"] = commands.diag,
     ["clientinfo"] = commands.clientinfo,
     ["client"] = commands.clientinfo,
 }

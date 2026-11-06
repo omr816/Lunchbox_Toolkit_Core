@@ -96,7 +96,7 @@ end
 local Vendor = {}
 LT.Vendor = Vendor
 
-Vendor.VERSION = "1.0.0"
+Vendor.VERSION = "1.0.1"
 Vendor.PLUGIN_ID = "lunchbox_vendor"
 Vendor.AUTO_SELL_DEFAULT = false
 

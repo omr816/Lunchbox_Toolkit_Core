@@ -558,10 +558,15 @@ function Caps:GetStatus(profile, stat, level)
         adjustmentSources = definition.adjustmentSources or {},
         relevant = definition.relevant,
         aimPercent = self:GetAimPercent(profile, stat),
-        boost = definition.boost,
-        mode = definition.mode,
+        -- The multiplier is MODE-dependent (see GetModeBoost). Reading
+        -- definition.boost left it nil on every cap, and ApplyPolicy multiplies a
+        -- nil by 1, so caps never boosted at all until the self test caught it.
+        boost = nil,
+        mode = nil,
         limitations = {},
     }
+
+    status.boost, status.mode = self:GetModeBoost(profile, stat, status.targetKind)
 
     if status.target <= 0 then
         status.known = false
